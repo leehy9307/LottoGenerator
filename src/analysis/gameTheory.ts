@@ -31,47 +31,48 @@ export function calculateAntiPopularity(draws: LottoDrawResult[]): Map<number, n
   for (let i = 1; i <= 45; i++) {
     let popularity = 0;
 
-    // (1) 생일 편향: 1~12 (월) 가장 인기, 13~31 (일) 인기, 32~45 비인기
+    // (1) 생일 편향 — 완만한 경사 (v2.0 버그수정: 0.35→0.08)
+    // 연구 기반: 생일 선호는 전체 구매자의 ~30%에게만 해당
+    // 나머지 70%는 자동 선택이므로 편향 강도를 현실적으로 조정
     if (i <= 12) {
-      popularity += 0.35; // 월+일 모두 해당
+      popularity += 0.08;  // 월+일 영역 (약한 선호)
     } else if (i <= 31) {
-      popularity += 0.20; // 일(day)만 해당
+      popularity += 0.05;  // 일 영역 (미약한 선호)
     } else {
-      popularity += 0.0;  // 생일로 선택 불가 → 비인기 영역
+      popularity += 0.0;
     }
 
-    // (2) 행운의 숫자 편향
+    // (2) 행운의 숫자 편향 — 축소 조정 (v2.0 버그수정)
     const luckyNumbers: Record<number, number> = {
-      7: 0.15, 3: 0.10, 8: 0.08,  // 최고 인기
-      17: 0.08, 27: 0.06, 37: 0.05, // 7 계열
-      13: 0.04, 23: 0.03, 33: 0.03, 43: 0.02, // 3 계열
+      7: 0.06, 3: 0.04, 8: 0.03,   // 인기 숫자 (완만)
+      17: 0.03, 27: 0.02, 37: 0.02, // 7 계열
+      13: 0.02, 23: 0.01, 33: 0.01, 43: 0.01, // 3 계열
     };
     popularity += luckyNumbers[i] || 0;
 
     // (3) 라운드 넘버 편향
     if (i % 10 === 0) {
-      popularity += 0.06;
+      popularity += 0.02;
     } else if (i % 5 === 0) {
-      popularity += 0.03;
+      popularity += 0.01;
     }
 
-    // (4) 용지 위치 편향 (상단 숫자 선호)
-    // 로또 용지: 1~45가 가로 7열로 배치 → 상단일수록 인기
-    const row = Math.ceil(i / 7); // 1~7행
-    popularity += Math.max(0, (7 - row) * 0.015);
+    // (4) 용지 위치 편향 (미약)
+    const row = Math.ceil(i / 7);
+    popularity += Math.max(0, (7 - row) * 0.005);
 
     // (5) 최근 당첨번호 모방 편향
-    // 직전 5회 당첨번호를 그대로 쓰는 사람이 많음
     const recentDraws = draws.slice(-5);
     for (const draw of recentDraws) {
       if (draw.numbers.includes(i)) {
-        popularity += 0.02;
+        popularity += 0.01;
       }
     }
 
-    // Anti-Popularity: 인기가 높을수록 낮은 점수 (역수)
-    // 점수 범위를 0~1로 정규화하기 위해 1에서 뺌
-    scores.set(i, 1 - Math.min(popularity, 0.95));
+    // Anti-Popularity 점수 변환
+    // 최대 popularity ≈ 0.20 수준으로, 점수 차이가 완만해짐
+    // → 정규화 후에도 저번호와 고번호 간 격차가 극단적이지 않음
+    scores.set(i, 1 - Math.min(popularity, 0.5));
   }
 
   return scores;
@@ -127,18 +128,17 @@ export function calculatePairCorrelation(draws: LottoDrawResult[]): Map<number, 
  * Shannon Entropy: H = -Σ(p_i × log2(p_i))
  */
 export function distributionEntropyScore(number: number, draws: LottoDrawResult[]): number {
-  // 각 번호가 속한 구간의 "다른 구매자 밀집도" 역수
-  // 구간별 인기도 추정 (한국 로또 기준)
+  // 구간별 인기도 추정 — 완만한 차이 (v2.0.1 수정)
+  // 차이를 줄여서 특정 구간 쏠림 방지
   const zonePopularity: Record<number, number> = {
-    0: 0.28, // 1~9:   생일(월) 영역, 높은 인기
-    1: 0.25, // 10~19: 생일(일) + 10대, 높은 인기
-    2: 0.22, // 20~29: 생일(일), 중간 인기
-    3: 0.15, // 30~39: 일부 생일(30,31) + 비인기
-    4: 0.10, // 40~45: 가장 비인기 → 기대값 최고
+    0: 0.22, // 1~9
+    1: 0.21, // 10~19
+    2: 0.20, // 20~29
+    3: 0.19, // 30~39
+    4: 0.18, // 40~45
   };
 
   const zone = number >= 40 ? 4 : Math.floor((number - 1) / 10);
-  // 비인기 구간일수록 높은 점수
   return 1 - (zonePopularity[zone] || 0.2);
 }
 

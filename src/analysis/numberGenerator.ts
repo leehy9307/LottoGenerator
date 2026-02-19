@@ -14,7 +14,7 @@ import {
 } from './gameTheory';
 import { getBallColorGroup } from '../constants/ballColors';
 
-const ALGORITHM_VERSION = '2.0.0';
+const ALGORITHM_VERSION = '2.0.1';
 
 interface WeightedScore {
   number: number;
@@ -43,14 +43,14 @@ interface WeightedScore {
  * 쌍관계로 LSTM 근사 패턴 반영
  */
 const WEIGHTS = {
-  frequency:           0.10,  // 출현 빈도 (↓ 20→10: 과거 편향 축소)
-  recency:             0.10,  // 최근성 가중 (↓ 20→10)
-  momentum:            0.10,  // 모멘텀 (= 유지)
-  gap:                 0.08,  // 갭 분석 (↓ 15→8: 도박사의 오류 완화)
-  temporal:            0.12,  // 시간 엔트로피 (↓ 25→12: 결정론적 랜덤 축소)
-  antiPopularity:      0.25,  // ★ 비인기번호 (NEW: 게임이론 최고 가중치)
-  pairCorrelation:     0.10,  // ★ 쌍 상관관계 (NEW: LSTM 근사)
-  distributionEntropy: 0.15,  // ★ 분포 엔트로피 (NEW: 구간 균형)
+  frequency:           0.14,  // 출현 빈도 (v2.0.1: 10→14, 통계 기반 복원)
+  recency:             0.14,  // 최근성 가중 (v2.0.1: 10→14)
+  momentum:            0.12,  // 모멘텀
+  gap:                 0.10,  // 갭 분석 (v2.0.1: 8→10)
+  temporal:            0.15,  // 시간 엔트로피 (v2.0.1: 12→15, 다양성 확보)
+  antiPopularity:      0.15,  // ★ 비인기번호 (v2.0.1: 25→15, 쏠림 방지)
+  pairCorrelation:     0.12,  // ★ 쌍 상관관계 (LSTM 근사)
+  distributionEntropy: 0.08,  // ★ 분포 엔트로피 (v2.0.1: 15→8, 구간 균형 완화)
 } as const;
 
 // ─── PRNG ─────────────────────────────────────────────────────────
@@ -213,51 +213,106 @@ export function generateExpertPick(
 function selectWithConstraints(scored: WeightedScore[], now: Date): number[] {
   const seed = createTimeSeed();
   const rng = mulberry32(seed);
-  const maxAttempts = 300; // v2.0: 200 → 300으로 증가 (강화된 제약조건)
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const selected = greedySelect(scored, attempt, rng);
-    if (selected && validateConstraints(selected)) {
+  // 1차: 가중 확률 샘플링 (v2.0.1 — greedy 대신 확률적 선택)
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const selected = weightedSample(scored, rng);
+    if (validateConstraints(selected)) {
       return selected.sort((a, b) => a - b);
     }
   }
 
-  return scored
-    .slice(0, 6)
-    .map(s => s.number)
-    .sort((a, b) => a - b);
+  // 2차: 구간 보장 선택 (fallback — 절대 실패하지 않음)
+  return zoneFallback(scored, rng);
 }
 
-function greedySelect(
-  scored: WeightedScore[],
-  attempt: number,
-  rng: () => number
-): number[] | null {
+/**
+ * 가중 확률 샘플링: 점수에 비례하는 확률로 6개를 뽑되,
+ * 완전 greedy가 아니라 확률적으로 선택하여 다양한 구간에서 뽑힘
+ */
+function weightedSample(scored: WeightedScore[], rng: () => number): number[] {
   const selected: number[] = [];
-  const candidates = [...scored];
+  const remaining = [...scored];
 
-  if (attempt > 0) {
-    for (let i = 0; i < candidates.length; i++) {
-      const jitter = (rng() - 0.5) * 0.12 * Math.min(attempt / 10, 1);
-      candidates[i] = { ...candidates[i], score: candidates[i].score + jitter };
-    }
-    candidates.sort((a, b) => b.score - a.score);
-  }
+  for (let pick = 0; pick < 6; pick++) {
+    // 점수를 확률로 변환 (softmax-like)
+    const minScore = Math.min(...remaining.map(s => s.score));
+    const shifted = remaining.map(s => s.score - minScore + 0.01);
+    const totalWeight = shifted.reduce((sum, w) => sum + w, 0);
 
-  for (const candidate of candidates) {
-    if (selected.length >= 6) break;
-
-    const testSet = [...selected, candidate.number];
-    if (testSet.length === 6) {
-      if (validateConstraints(testSet)) {
-        selected.push(candidate.number);
+    // 가중 랜덤 선택
+    let r = rng() * totalWeight;
+    let chosenIdx = 0;
+    for (let i = 0; i < shifted.length; i++) {
+      r -= shifted[i];
+      if (r <= 0) {
+        chosenIdx = i;
+        break;
       }
-    } else {
-      selected.push(candidate.number);
     }
+
+    selected.push(remaining[chosenIdx].number);
+    remaining.splice(chosenIdx, 1);
   }
 
-  return selected.length === 6 ? selected : null;
+  return selected;
+}
+
+/**
+ * 구간 보장 폴백: 각 구간에서 최소 1개씩 보장하고 나머지를 상위 점수로 채움
+ * → 어떤 상황에서도 제약조건을 만족하는 조합 반환
+ */
+function zoneFallback(scored: WeightedScore[], rng: () => number): number[] {
+  // 5개 구간으로 분할
+  const zones: WeightedScore[][] = [[], [], [], [], []];
+  for (const s of scored) {
+    const zone = s.number >= 40 ? 4 : Math.floor((s.number - 1) / 10);
+    zones[zone].push(s);
+  }
+
+  // 각 구간을 점수 순 정렬
+  for (const zone of zones) {
+    zone.sort((a, b) => b.score - a.score);
+  }
+
+  const selected: number[] = [];
+  const usedNumbers = new Set<number>();
+
+  // 저번호(1~22)에서 2개, 고번호(23~45)에서 2개 보장
+  const lowZones = [...zones[0], ...zones[1], ...zones[2].filter(s => s.number <= 22)];
+  const highZones = [...zones[2].filter(s => s.number >= 23), ...zones[3], ...zones[4]];
+  lowZones.sort((a, b) => b.score - a.score);
+  highZones.sort((a, b) => b.score - a.score);
+
+  // 저번호 2개
+  for (const s of lowZones) {
+    if (selected.length >= 2) break;
+    selected.push(s.number);
+    usedNumbers.add(s.number);
+  }
+
+  // 고번호 2개 (32~45에서 최소 1개 포함)
+  const highZone32plus = highZones.filter(s => s.number >= 32);
+  if (highZone32plus.length > 0) {
+    selected.push(highZone32plus[0].number);
+    usedNumbers.add(highZone32plus[0].number);
+  }
+  for (const s of highZones) {
+    if (selected.length >= 4) break;
+    if (usedNumbers.has(s.number)) continue;
+    selected.push(s.number);
+    usedNumbers.add(s.number);
+  }
+
+  // 나머지 2개: 전체에서 점수 높은 순으로 채움
+  const rest = scored.filter(s => !usedNumbers.has(s.number));
+  rest.sort((a, b) => b.score - a.score);
+  for (const s of rest) {
+    if (selected.length >= 6) break;
+    selected.push(s.number);
+  }
+
+  return selected.sort((a, b) => a - b);
 }
 
 // ─── 제약조건 검증 (v2.0 강화) ───────────────────────────────────

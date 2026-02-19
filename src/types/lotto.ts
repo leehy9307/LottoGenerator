@@ -41,5 +41,5 @@ export interface AppState {
   refreshing: boolean;
   error: string | null;
   analysis: AnalysisResult | null;
-  dataSource: 'api' | 'cache' | 'fallback';
+  dataSource: 'github' | 'api' | 'cache' | 'fallback';
 }

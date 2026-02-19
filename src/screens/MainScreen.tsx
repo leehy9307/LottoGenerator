@@ -30,6 +30,7 @@ function formatTime(ts: number): string {
 
 function dataSourceLabel(source: string): { text: string; color: string } {
   switch (source) {
+    case 'github': return { text: '온라인 데이터', color: '#4CAF50' };
     case 'api': return { text: '실시간 데이터', color: '#4CAF50' };
     case 'cache': return { text: '캐시 데이터', color: '#2196F3' };
     default: return { text: '오프라인 데이터', color: COLORS.gold };

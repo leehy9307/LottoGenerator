@@ -1,32 +1,88 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LottoDrawResult } from '../types/lotto';
 
-const API_BASE = 'https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=';
-const CACHE_KEY = 'lotto_draws_cache';
-const CACHE_TS_KEY = 'lotto_cache_timestamp';
-const CACHE_TTL = 1000 * 60 * 60; // 1시간 캐시 유효
+// ─── 데이터 소스 우선순위 ────────────────────────────────────────
+// 1순위: GitHub Raw (smok95/lotto) — CORS 무관, 안정적
+// 2순위: 동행복권 API — 차단될 수 있음
+// 3순위: AsyncStorage 캐시
+// 4순위: 번들 폴백 데이터
+
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/smok95/lotto/main/results/';
+const DH_API_BASE = 'https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=';
+const CACHE_KEY = 'lotto_draws_cache_v2';
+const CACHE_TS_KEY = 'lotto_cache_timestamp_v2';
+const CACHE_TTL = 1000 * 60 * 60; // 1시간
 
 // 1회차 기준일: 2002-12-07 (토요일)
 const EPOCH_DATE = new Date(2002, 11, 7);
 
-/**
- * 현재 날짜 기준 최신 회차 번호 계산
- * 매주 토요일 추첨, 결과는 토요일 저녁에 확정
- */
 export function calculateLatestDrawNo(now: Date = new Date()): number {
   const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000) - (now.getTimezoneOffset() * 60 * 1000));
   const diffMs = koreaTime.getTime() - EPOCH_DATE.getTime();
   const diffWeeks = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
-  // 토요일 21시 이전이면 아직 해당 주 추첨 전
-  const dayOfWeek = koreaTime.getDay(); // 0=일 ~ 6=토
+  const dayOfWeek = koreaTime.getDay();
   const hour = koreaTime.getHours();
   if (dayOfWeek === 6 && hour < 21) {
-    return diffWeeks; // 이번 주 아직 추첨 안됨
+    return diffWeeks;
   }
   return diffWeeks + 1;
 }
 
-interface ApiResponse {
+// ─── GitHub Raw 데이터 소스 (1순위) ──────────────────────────────
+
+interface GitHubLottoResponse {
+  draw_no: number;
+  numbers: number[];
+  bonus_no: number;
+  date: string;
+  divisions?: { prize: number; winners: number }[];
+  total_sales_amount?: number;
+}
+
+function parseGitHubResponse(data: GitHubLottoResponse): LottoDrawResult | null {
+  if (!data.draw_no || !data.numbers || data.numbers.length !== 6) return null;
+  return {
+    drawNo: data.draw_no,
+    date: data.date ? data.date.split('T')[0] : '',
+    numbers: [...data.numbers].sort((a, b) => a - b),
+    bonus: data.bonus_no,
+  };
+}
+
+async function fetchFromGitHub(drawNo: number): Promise<LottoDrawResult | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`${GITHUB_RAW_BASE}${drawNo}.json`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data: GitHubLottoResponse = await res.json();
+    return parseGitHubResponse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function batchFetchGitHub(drawNos: number[]): Promise<LottoDrawResult[]> {
+  const results: LottoDrawResult[] = [];
+  const batchSize = 15; // GitHub은 rate limit이 넉넉하므로 15개씩
+
+  for (let b = 0; b < drawNos.length; b += batchSize) {
+    const batch = drawNos.slice(b, b + batchSize);
+    const fetched = await Promise.all(batch.map(n => fetchFromGitHub(n)));
+    for (const r of fetched) {
+      if (r) results.push(r);
+    }
+  }
+
+  return results;
+}
+
+// ─── 동행복권 API (2순위) ────────────────────────────────────────
+
+interface DhApiResponse {
   returnValue: string;
   drwNo: number;
   drwNoDate: string;
@@ -39,7 +95,7 @@ interface ApiResponse {
   bnusNo: number;
 }
 
-function parseApiResponse(data: ApiResponse): LottoDrawResult | null {
+function parseDhApiResponse(data: DhApiResponse): LottoDrawResult | null {
   if (data.returnValue !== 'success') return null;
   const numbers = [
     data.drwtNo1, data.drwtNo2, data.drwtNo3,
@@ -53,32 +109,46 @@ function parseApiResponse(data: ApiResponse): LottoDrawResult | null {
   };
 }
 
-async function fetchSingleDraw(drawNo: number): Promise<LottoDrawResult | null> {
+async function fetchFromDhApi(drawNo: number): Promise<LottoDrawResult | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`${API_BASE}${drawNo}`, {
+    const res = await fetch(`${DH_API_BASE}${drawNo}`, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://www.dhlottery.co.kr/',
       },
     });
     clearTimeout(timeout);
     if (!res.ok) return null;
     const text = await res.text();
-    // API가 JSON이 아닌 HTML을 반환할 수 있음
     if (text.startsWith('<') || text.startsWith('<!')) return null;
-    const data: ApiResponse = JSON.parse(text);
-    return parseApiResponse(data);
+    const data: DhApiResponse = JSON.parse(text);
+    return parseDhApiResponse(data);
   } catch {
     return null;
   }
 }
 
-/**
- * AsyncStorage에서 캐시된 데이터 로드
- */
+async function batchFetchDhApi(drawNos: number[]): Promise<LottoDrawResult[]> {
+  const results: LottoDrawResult[] = [];
+  const batchSize = 10;
+
+  for (let b = 0; b < drawNos.length; b += batchSize) {
+    const batch = drawNos.slice(b, b + batchSize);
+    const fetched = await Promise.all(batch.map(n => fetchFromDhApi(n)));
+    for (const r of fetched) {
+      if (r) results.push(r);
+    }
+  }
+
+  return results;
+}
+
+// ─── 캐시 (3순위) ────────────────────────────────────────────────
+
 async function loadCache(): Promise<LottoDrawResult[] | null> {
   try {
     const [cached, ts] = await Promise.all([
@@ -94,6 +164,16 @@ async function loadCache(): Promise<LottoDrawResult[] | null> {
   }
 }
 
+async function loadCacheIgnoreTTL(): Promise<LottoDrawResult[] | null> {
+  try {
+    const cached = await AsyncStorage.getItem(CACHE_KEY);
+    if (!cached) return null;
+    return JSON.parse(cached) as LottoDrawResult[];
+  } catch {
+    return null;
+  }
+}
+
 async function saveCache(draws: LottoDrawResult[]): Promise<void> {
   try {
     await Promise.all([
@@ -103,19 +183,19 @@ async function saveCache(draws: LottoDrawResult[]): Promise<void> {
   } catch { /* ignore */ }
 }
 
-/**
- * 실시간 데이터 fetch
- * 1) 캐시 확인 → 2) API batch fetch → 3) 폴백 데이터
- */
+// ─── 통합 데이터 로더 ───────────────────────────────────────────
+
+type DataSource = 'github' | 'api' | 'cache' | 'fallback';
+
 export async function fetchLottoData(): Promise<{
   draws: LottoDrawResult[];
-  source: 'api' | 'cache' | 'fallback';
+  source: DataSource;
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
-  const startDraw = Math.max(1, latestDraw - 78); // 최근 79회
+  const startDraw = Math.max(1, latestDraw - 78);
 
-  // 1) 캐시 체크
+  // 1) 캐시 체크 (TTL 내)
   const cached = await loadCache();
   if (cached && cached.length > 0) {
     const cachedLatest = Math.max(...cached.map(d => d.drawNo));
@@ -124,26 +204,28 @@ export async function fetchLottoData(): Promise<{
     }
   }
 
-  // 2) API에서 실시간 fetch 시도
-  const testResult = await fetchSingleDraw(latestDraw);
-  if (testResult) {
-    // API 접근 가능 — batch로 모두 가져오기
-    const draws: LottoDrawResult[] = [testResult];
-    const allDrawNos: number[] = [];
-    for (let i = startDraw; i <= latestDraw; i++) {
-      if (i === latestDraw) continue;
-      allDrawNos.push(i);
-    }
+  // 2) GitHub Raw 시도 (1순위)
+  const allDrawNos = Array.from({ length: latestDraw - startDraw + 1 }, (_, i) => startDraw + i);
+  const githubTest = await fetchFromGitHub(latestDraw);
 
-    // 10개씩 배치로 병렬 호출
-    const batchSize = 10;
-    for (let b = 0; b < allDrawNos.length; b += batchSize) {
-      const batch = allDrawNos.slice(b, b + batchSize);
-      const results = await Promise.all(batch.map(n => fetchSingleDraw(n)));
-      for (const r of results) {
-        if (r) draws.push(r);
-      }
+  if (githubTest) {
+    const rest = allDrawNos.filter(n => n !== latestDraw);
+    const githubResults = await batchFetchGitHub(rest);
+    const draws = [githubTest, ...githubResults];
+
+    if (draws.length >= 30) {
+      draws.sort((a, b) => a.drawNo - b.drawNo);
+      await saveCache(draws);
+      return { draws, source: 'github', latestDraw };
     }
+  }
+
+  // 3) 동행복권 API 시도 (2순위)
+  const dhTest = await fetchFromDhApi(latestDraw);
+  if (dhTest) {
+    const rest = allDrawNos.filter(n => n !== latestDraw);
+    const dhResults = await batchFetchDhApi(rest);
+    const draws = [dhTest, ...dhResults];
 
     if (draws.length >= 30) {
       draws.sort((a, b) => a.drawNo - b.drawNo);
@@ -152,43 +234,43 @@ export async function fetchLottoData(): Promise<{
     }
   }
 
-  // 3) 캐시가 있으면 (만료되었어도) 사용
-  if (cached && cached.length > 0) {
-    return { draws: cached, source: 'cache', latestDraw };
+  // 4) 만료된 캐시라도 사용 (3순위)
+  const staleCache = await loadCacheIgnoreTTL();
+  if (staleCache && staleCache.length > 0) {
+    return { draws: staleCache, source: 'cache', latestDraw };
   }
 
-  // 4) 번들된 폴백 데이터
+  // 5) 번들 폴백 (최후 수단)
   return { draws: FALLBACK_DATA, source: 'fallback', latestDraw };
 }
 
-/**
- * 새로고침 전용: 캐시 무시하고 강제로 API 재시도
- */
 export async function refreshLottoData(): Promise<{
   draws: LottoDrawResult[];
-  source: 'api' | 'cache' | 'fallback';
+  source: DataSource;
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
   const startDraw = Math.max(1, latestDraw - 78);
+  const allDrawNos = Array.from({ length: latestDraw - startDraw + 1 }, (_, i) => startDraw + i);
 
-  // API 직접 시도
-  const testResult = await fetchSingleDraw(latestDraw);
-  if (testResult) {
-    const draws: LottoDrawResult[] = [testResult];
-    const allDrawNos: number[] = [];
-    for (let i = startDraw; i <= latestDraw; i++) {
-      if (i === latestDraw) continue;
-      allDrawNos.push(i);
+  // 새로고침: GitHub → 동행복권 → 캐시 → 폴백
+  const githubTest = await fetchFromGitHub(latestDraw);
+  if (githubTest) {
+    const rest = allDrawNos.filter(n => n !== latestDraw);
+    const results = await batchFetchGitHub(rest);
+    const draws = [githubTest, ...results];
+    if (draws.length >= 30) {
+      draws.sort((a, b) => a.drawNo - b.drawNo);
+      await saveCache(draws);
+      return { draws, source: 'github', latestDraw };
     }
-    const batchSize = 10;
-    for (let b = 0; b < allDrawNos.length; b += batchSize) {
-      const batch = allDrawNos.slice(b, b + batchSize);
-      const results = await Promise.all(batch.map(n => fetchSingleDraw(n)));
-      for (const r of results) {
-        if (r) draws.push(r);
-      }
-    }
+  }
+
+  const dhTest = await fetchFromDhApi(latestDraw);
+  if (dhTest) {
+    const rest = allDrawNos.filter(n => n !== latestDraw);
+    const results = await batchFetchDhApi(rest);
+    const draws = [dhTest, ...results];
     if (draws.length >= 30) {
       draws.sort((a, b) => a.drawNo - b.drawNo);
       await saveCache(draws);
@@ -196,15 +278,14 @@ export async function refreshLottoData(): Promise<{
     }
   }
 
-  // 실패 시 캐시 → 폴백
-  const cached = await loadCache();
-  if (cached && cached.length > 0) {
-    return { draws: cached, source: 'cache', latestDraw };
+  const staleCache = await loadCacheIgnoreTTL();
+  if (staleCache && staleCache.length > 0) {
+    return { draws: staleCache, source: 'cache', latestDraw };
   }
   return { draws: FALLBACK_DATA, source: 'fallback', latestDraw };
 }
 
-// 1133회(2024-08-10) ~ 1211회(2026-02-07) 실제 당첨 데이터
+// 1133회(2024-08-10) ~ 1196회(2025-10-25) 검증된 실제 당첨 데이터
 const FALLBACK_DATA: LottoDrawResult[] = [
   { drawNo: 1133, date: '2024-08-10', numbers: [2, 9, 13, 34, 38, 45], bonus: 36 },
   { drawNo: 1134, date: '2024-08-17', numbers: [2, 6, 12, 19, 22, 43], bonus: 7 },
@@ -270,19 +351,4 @@ const FALLBACK_DATA: LottoDrawResult[] = [
   { drawNo: 1194, date: '2025-10-11', numbers: [3, 8, 20, 31, 33, 44], bonus: 40 },
   { drawNo: 1195, date: '2025-10-18', numbers: [9, 15, 17, 24, 25, 42], bonus: 29 },
   { drawNo: 1196, date: '2025-10-25', numbers: [6, 14, 22, 33, 37, 45], bonus: 11 },
-  { drawNo: 1197, date: '2025-11-01', numbers: [2, 10, 18, 27, 34, 40], bonus: 22 },
-  { drawNo: 1198, date: '2025-11-08', numbers: [1, 5, 13, 20, 36, 43], bonus: 28 },
-  { drawNo: 1199, date: '2025-11-15', numbers: [4, 11, 19, 26, 33, 45], bonus: 8 },
-  { drawNo: 1200, date: '2025-11-22', numbers: [3, 7, 15, 22, 38, 41], bonus: 31 },
-  { drawNo: 1201, date: '2025-11-29', numbers: [8, 12, 17, 28, 35, 44], bonus: 6 },
-  { drawNo: 1202, date: '2025-12-06', numbers: [2, 9, 21, 30, 37, 43], bonus: 15 },
-  { drawNo: 1203, date: '2025-12-13', numbers: [5, 14, 16, 25, 33, 40], bonus: 42 },
-  { drawNo: 1204, date: '2025-12-20', numbers: [1, 6, 11, 23, 34, 45], bonus: 19 },
-  { drawNo: 1205, date: '2025-12-27', numbers: [3, 10, 18, 27, 39, 42], bonus: 35 },
-  { drawNo: 1206, date: '2026-01-03', numbers: [7, 13, 20, 29, 36, 44], bonus: 2 },
-  { drawNo: 1207, date: '2026-01-10', numbers: [4, 8, 15, 22, 31, 40], bonus: 27 },
-  { drawNo: 1208, date: '2026-01-17', numbers: [6, 11, 19, 24, 37, 43], bonus: 33 },
-  { drawNo: 1209, date: '2026-01-24', numbers: [2, 9, 14, 28, 35, 41], bonus: 17 },
-  { drawNo: 1210, date: '2026-01-31', numbers: [5, 12, 21, 26, 33, 45], bonus: 7 },
-  { drawNo: 1211, date: '2026-02-07', numbers: [1, 7, 16, 23, 38, 42], bonus: 30 },
 ];

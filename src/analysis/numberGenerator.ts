@@ -10,11 +10,12 @@ import {
   calculateAntiPopularity,
   calculatePairCorrelation,
   distributionEntropyScore,
+  consecutivePairPotential,
   analyzeCarryover,
 } from './gameTheory';
 import { getBallColorGroup } from '../constants/ballColors';
 
-const ALGORITHM_VERSION = '2.0.1';
+const ALGORITHM_VERSION = '3.0.0';
 
 interface WeightedScore {
   number: number;
@@ -28,29 +29,45 @@ interface WeightedScore {
     antiPopularity: number;
     pairCorrelation: number;
     distributionEntropy: number;
+    consecutiveBonus: number;
   };
 }
 
 /**
- * v2.0 8-Factor 가중치 설정
- *
- * [기존 5-Factor v1.0]
- * 빈도 20% + 최근성 20% + 모멘텀 20% + 갭 15% + 시간엔트로피 25%
- *
- * [신규 8-Factor v2.0 — AI + 게임이론 강화]
- * 비인기번호(게임이론)가 최고 가중치 → 당첨 시 기대값 극대화
- * 분포엔트로피로 구간 균형 유도 → 비인기 구간 강화
- * 쌍관계로 LSTM 근사 패턴 반영
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │  v3.0 Expert-Grade 가중치 — 수학자/게임이론 전문가 해석    │
+ * ├─────────────────────────────────────────────────────────────┤
+ * │                                                             │
+ * │  수학적 사실:                                               │
+ * │  ① 모든 조합 확률 = 1/8,145,060 (변경 불가)               │
+ * │  ② 추첨은 독립시행 → 과거가 미래를 예측하지 못함           │
+ * │  ③ 유일한 수학적 에지 = 당첨 시 기대 수령액 극대화         │
+ * │     E(수령) = P(당첨) × 잭팟 / 동일번호선택자수            │
+ * │     P(당첨) 고정 → "동일번호선택자수" 최소화가 핵심        │
+ * │                                                             │
+ * │  팩터 분류:                                                 │
+ * │  [Tier 1] 게임이론 — 기대값에 직접 영향 (55%)              │
+ * │  [Tier 2] 품질 랜덤화 — 다양성 확보 (20%)                  │
+ * │  [Tier 3] 통계 패턴 — 보조 신호 (25%)                      │
+ * │    (예측력은 없으나 다양한 조합 생성에 기여)                │
+ * │                                                             │
+ * └─────────────────────────────────────────────────────────────┘
  */
 const WEIGHTS = {
-  frequency:           0.14,  // 출현 빈도 (v2.0.1: 10→14, 통계 기반 복원)
-  recency:             0.14,  // 최근성 가중 (v2.0.1: 10→14)
-  momentum:            0.12,  // 모멘텀
-  gap:                 0.10,  // 갭 분석 (v2.0.1: 8→10)
-  temporal:            0.15,  // 시간 엔트로피 (v2.0.1: 12→15, 다양성 확보)
-  antiPopularity:      0.15,  // ★ 비인기번호 (v2.0.1: 25→15, 쏠림 방지)
-  pairCorrelation:     0.12,  // ★ 쌍 상관관계 (LSTM 근사)
-  distributionEntropy: 0.08,  // ★ 분포 엔트로피 (v2.0.1: 15→8, 구간 균형 완화)
+  // ── Tier 1: 게임이론 (55%) — 기대값 직접 영향 ──
+  antiPopularity:      0.28,  // 비인기번호 선호 (Nash Equilibrium 기반)
+  distributionEntropy: 0.15,  // 구간 분산 (비인기 구간 강화)
+  consecutiveBonus:    0.12,  // 연속번호 보너스 (사람들이 기피 → 분할 감소)
+
+  // ── Tier 2: 품질 랜덤화 (20%) — 매회 다른 조합 ──
+  temporal:            0.20,  // 시간 엔트로피 (PRNG 기반 탐색)
+
+  // ── Tier 3: 통계 패턴 (25%) — 보조 신호 ──
+  pairCorrelation:     0.10,  // 쌍 상관관계 (LSTM 경량 근사)
+  frequency:           0.05,  // 출현 빈도 (약한 보조)
+  recency:             0.04,  // 최근성 (약한 보조)
+  momentum:            0.03,  // 모멘텀 (약한 보조)
+  gap:                 0.03,  // 갭 분석 (약한 보조 — 도박사의 오류 경계)
 } as const;
 
 // ─── PRNG ─────────────────────────────────────────────────────────
@@ -73,7 +90,7 @@ function createTimeSeed(): number {
     ^ (d.getMinutes() * 16777259)) >>> 0;
 }
 
-// ─── 시간 엔트로피 (v1.0에서 계승, 가중치만 축소) ────────────────
+// ─── 시간 엔트로피 ───────────────────────────────────────────────
 
 function temporalWeights(now: Date): Map<number, number> {
   const weights = new Map<number, number>();
@@ -99,7 +116,7 @@ function temporalWeights(now: Date): Map<number, number> {
   return weights;
 }
 
-// ─── Expert Pick v2.0: 8-Factor AI 강화 알고리즘 ─────────────────
+// ─── Expert Pick v3.0 ────────────────────────────────────────────
 
 export interface ExpertPickResult {
   numbers: number[];
@@ -107,14 +124,14 @@ export interface ExpertPickResult {
 }
 
 /**
- * Expert Pick v2.0 — 8-Factor AI + 게임이론 앙상블
+ * Expert Pick v3.0 — 전문가 해석 기반 최적 알고리즘
  *
- * 핵심 변경점 (vs v1.0):
- * 1. 게임이론 비인기번호 최고 가중치 (25%) → 기대값 극대화
- * 2. 쌍 상관관계로 LSTM/Transformer 시퀀스 패턴 근사 (10%)
- * 3. 분포 엔트로피로 구간 균형 강화 (15%) → 비인기 구간(32~45) 강화
- * 4. 이월 분석 + 켈리 기준으로 전략 신뢰도 제공
- * 5. 기존 팩터 가중치 재조정 (과적합 방지)
+ * 핵심 변경 (vs v2.0.1):
+ * 1. 게임이론 팩터 55%로 대폭 강화 (기대값 최대화 집중)
+ * 2. 연속번호 보너스 신규 통합 (사람들이 기피 → 분할 확률↓)
+ * 3. 빈도/최근성/모멘텀/갭을 보조 수준으로 격하 (예측력 없음)
+ * 4. Temperature 기반 가중 샘플링 (다양성과 전략성 균형)
+ * 5. 조합 수준 인기 패턴 검출 (등차수열, 동일대역 등 차단)
  */
 export function generateExpertPick(
   draws: LottoDrawResult[],
@@ -123,22 +140,20 @@ export function generateExpertPick(
 ): ExpertPickResult {
   const now = timestamp ? new Date(timestamp) : new Date();
 
-  // ── 8개 팩터 계산 ──
-  // 기존 5개
+  // ── 9개 팩터 계산 ──
   const frequencies = calculateFrequencies(draws);
   const recencyScores = recencyWeightedFrequency(draws);
   const momentumScores = calculateMomentum(draws);
   const gapScores = calculateGaps(draws);
   const timeScores = temporalWeights(now);
-
-  // 신규 3개 (게임이론 + AI)
   const antiPopScores = calculateAntiPopularity(draws);
   const pairScores = calculatePairCorrelation(draws);
 
-  // 분포 엔트로피는 번호별 직접 계산
   const distEntropyScores = new Map<number, number>();
+  const consecutiveScores = new Map<number, number>();
   for (let i = 1; i <= 45; i++) {
     distEntropyScores.set(i, distributionEntropyScore(i, draws));
+    consecutiveScores.set(i, consecutivePairPotential(i, draws));
   }
 
   // ── 정규화 ──
@@ -146,57 +161,59 @@ export function generateExpertPick(
   for (const f of frequencies) {
     freqMap.set(f.number, f.count);
   }
-  const normFreq = normalizeScores(freqMap);
-  const normRecency = normalizeScores(recencyScores);
-  const normMomentum = normalizeScores(momentumScores);
-  const normGap = normalizeScores(gapScores);
-  const normTime = normalizeScores(timeScores);
-  const normAntiPop = normalizeScores(antiPopScores);
-  const normPair = normalizeScores(pairScores);
-  const normDistEntropy = normalizeScores(distEntropyScores);
+  const norm = {
+    freq: normalizeScores(freqMap),
+    recency: normalizeScores(recencyScores),
+    momentum: normalizeScores(momentumScores),
+    gap: normalizeScores(gapScores),
+    time: normalizeScores(timeScores),
+    antiPop: normalizeScores(antiPopScores),
+    pair: normalizeScores(pairScores),
+    distEntropy: normalizeScores(distEntropyScores),
+    consecutive: normalizeScores(consecutiveScores),
+  };
 
-  // ── 복합 점수 계산 ──
+  // ── 복합 점수 ──
   const scored: WeightedScore[] = [];
   for (let i = 1; i <= 45; i++) {
-    const components = {
-      frequency: normFreq.get(i) || 0,
-      recency: normRecency.get(i) || 0,
-      momentum: normMomentum.get(i) || 0,
-      gap: normGap.get(i) || 0,
-      temporal: normTime.get(i) || 0,
-      antiPopularity: normAntiPop.get(i) || 0,
-      pairCorrelation: normPair.get(i) || 0,
-      distributionEntropy: normDistEntropy.get(i) || 0,
+    const c = {
+      frequency: norm.freq.get(i) || 0,
+      recency: norm.recency.get(i) || 0,
+      momentum: norm.momentum.get(i) || 0,
+      gap: norm.gap.get(i) || 0,
+      temporal: norm.time.get(i) || 0,
+      antiPopularity: norm.antiPop.get(i) || 0,
+      pairCorrelation: norm.pair.get(i) || 0,
+      distributionEntropy: norm.distEntropy.get(i) || 0,
+      consecutiveBonus: norm.consecutive.get(i) || 0,
     };
 
     const composite =
-      components.frequency           * WEIGHTS.frequency +
-      components.recency             * WEIGHTS.recency +
-      components.momentum            * WEIGHTS.momentum +
-      components.gap                 * WEIGHTS.gap +
-      components.temporal            * WEIGHTS.temporal +
-      components.antiPopularity      * WEIGHTS.antiPopularity +
-      components.pairCorrelation     * WEIGHTS.pairCorrelation +
-      components.distributionEntropy * WEIGHTS.distributionEntropy;
+      c.antiPopularity      * WEIGHTS.antiPopularity +
+      c.distributionEntropy * WEIGHTS.distributionEntropy +
+      c.consecutiveBonus    * WEIGHTS.consecutiveBonus +
+      c.temporal            * WEIGHTS.temporal +
+      c.pairCorrelation     * WEIGHTS.pairCorrelation +
+      c.frequency           * WEIGHTS.frequency +
+      c.recency             * WEIGHTS.recency +
+      c.momentum            * WEIGHTS.momentum +
+      c.gap                 * WEIGHTS.gap;
 
-    scored.push({ number: i, score: composite, components });
+    scored.push({ number: i, score: composite, components: c });
   }
 
   scored.sort((a, b) => b.score - a.score);
 
-  // ── 제약조건 기반 선택 ──
-  const numbers = selectWithConstraints(scored, now);
+  // ── 선택 ──
+  const numbers = selectWithConstraints(scored);
 
-  // ── 이월 분석 ──
+  // ── 전략 메타데이터 ──
   const carryover = analyzeCarryover(carryoverMisses);
+  const avgAntiPop = numbers.reduce((sum, n) => sum + (norm.antiPop.get(n) || 0), 0) / 6;
 
-  // ── 비인기 점수 계산 (선택된 6개의 평균 anti-popularity) ──
-  const avgAntiPop = numbers.reduce((sum, n) => sum + (normAntiPop.get(n) || 0), 0) / 6;
-
-  // ── 전략 메타데이터 구성 ──
   const strategy: StrategyInfo = {
     algorithmVersion: ALGORITHM_VERSION,
-    factorSummary: '빈도+최근성+모멘텀+갭+시간엔트로피+비인기(게임이론)+쌍관계(AI)+분포엔트로피',
+    factorSummary: '게임이론55%(비인기+분포+연속) + 랜덤20% + 패턴25%',
     antiPopularityScore: Math.round(avgAntiPop * 100) / 100,
     expectedValue: carryover.expectedValue,
     recommendation: carryover.recommendation,
@@ -208,43 +225,57 @@ export function generateExpertPick(
   return { numbers, strategy };
 }
 
-// ─── 제약조건 선택 (v1.0 계승 + 강화) ────────────────────────────
+// ─── Temperature 기반 가중 샘플링 ────────────────────────────────
 
-function selectWithConstraints(scored: WeightedScore[], now: Date): number[] {
+/**
+ * Temperature 파라미터:
+ *   T < 1.0 → 점수 높은 번호에 집중 (deterministic)
+ *   T = 1.0 → 점수에 비례 (proportional)
+ *   T > 1.0 → 더 균일하게 분산 (exploratory)
+ *
+ * 전문가 설정: T = 1.8
+ *   → 상위 번호를 약간 선호하되, 전 구간에서 고르게 뽑힘
+ *   → 너무 deterministic하면 매번 비슷한 조합 (비인기 효과 감소)
+ *   → 너무 random하면 게임이론 효과 소멸
+ */
+const TEMPERATURE = 1.8;
+
+function selectWithConstraints(scored: WeightedScore[]): number[] {
   const seed = createTimeSeed();
   const rng = mulberry32(seed);
 
-  // 1차: 가중 확률 샘플링 (v2.0.1 — greedy 대신 확률적 선택)
+  // 1차: Temperature 기반 가중 샘플링
   for (let attempt = 0; attempt < 500; attempt++) {
-    const selected = weightedSample(scored, rng);
-    if (validateConstraints(selected)) {
+    const selected = temperatureSample(scored, rng, TEMPERATURE);
+    if (validateConstraints(selected) && validateCombinationAntiPopularity(selected)) {
       return selected.sort((a, b) => a - b);
     }
   }
 
-  // 2차: 구간 보장 선택 (fallback — 절대 실패하지 않음)
+  // 2차: 구간 보장 폴백
   return zoneFallback(scored, rng);
 }
 
-/**
- * 가중 확률 샘플링: 점수에 비례하는 확률로 6개를 뽑되,
- * 완전 greedy가 아니라 확률적으로 선택하여 다양한 구간에서 뽑힘
- */
-function weightedSample(scored: WeightedScore[], rng: () => number): number[] {
+function temperatureSample(
+  scored: WeightedScore[],
+  rng: () => number,
+  temperature: number
+): number[] {
   const selected: number[] = [];
   const remaining = [...scored];
 
   for (let pick = 0; pick < 6; pick++) {
-    // 점수를 확률로 변환 (softmax-like)
+    // Temperature-scaled softmax
     const minScore = Math.min(...remaining.map(s => s.score));
-    const shifted = remaining.map(s => s.score - minScore + 0.01);
-    const totalWeight = shifted.reduce((sum, w) => sum + w, 0);
+    const scaled = remaining.map(s =>
+      Math.pow(s.score - minScore + 0.01, 1 / temperature)
+    );
+    const totalWeight = scaled.reduce((sum, w) => sum + w, 0);
 
-    // 가중 랜덤 선택
     let r = rng() * totalWeight;
     let chosenIdx = 0;
-    for (let i = 0; i < shifted.length; i++) {
-      r -= shifted[i];
+    for (let i = 0; i < scaled.length; i++) {
+      r -= scaled[i];
       if (r <= 0) {
         chosenIdx = i;
         break;
@@ -258,54 +289,43 @@ function weightedSample(scored: WeightedScore[], rng: () => number): number[] {
   return selected;
 }
 
-/**
- * 구간 보장 폴백: 각 구간에서 최소 1개씩 보장하고 나머지를 상위 점수로 채움
- * → 어떤 상황에서도 제약조건을 만족하는 조합 반환
- */
 function zoneFallback(scored: WeightedScore[], rng: () => number): number[] {
-  // 5개 구간으로 분할
   const zones: WeightedScore[][] = [[], [], [], [], []];
   for (const s of scored) {
     const zone = s.number >= 40 ? 4 : Math.floor((s.number - 1) / 10);
     zones[zone].push(s);
   }
-
-  // 각 구간을 점수 순 정렬
   for (const zone of zones) {
     zone.sort((a, b) => b.score - a.score);
   }
 
   const selected: number[] = [];
-  const usedNumbers = new Set<number>();
+  const used = new Set<number>();
 
-  // 저번호(1~22)에서 2개, 고번호(23~45)에서 2개 보장
-  const lowZones = [...zones[0], ...zones[1], ...zones[2].filter(s => s.number <= 22)];
-  const highZones = [...zones[2].filter(s => s.number >= 23), ...zones[3], ...zones[4]];
-  lowZones.sort((a, b) => b.score - a.score);
-  highZones.sort((a, b) => b.score - a.score);
+  const lowPool = [...zones[0], ...zones[1], ...zones[2].filter(s => s.number <= 22)];
+  const highPool = [...zones[2].filter(s => s.number >= 23), ...zones[3], ...zones[4]];
+  lowPool.sort((a, b) => b.score - a.score);
+  highPool.sort((a, b) => b.score - a.score);
 
-  // 저번호 2개
-  for (const s of lowZones) {
+  for (const s of lowPool) {
     if (selected.length >= 2) break;
     selected.push(s.number);
-    usedNumbers.add(s.number);
+    used.add(s.number);
   }
 
-  // 고번호 2개 (32~45에서 최소 1개 포함)
-  const highZone32plus = highZones.filter(s => s.number >= 32);
-  if (highZone32plus.length > 0) {
-    selected.push(highZone32plus[0].number);
-    usedNumbers.add(highZone32plus[0].number);
+  const high32 = highPool.filter(s => s.number >= 32);
+  if (high32.length > 0) {
+    selected.push(high32[0].number);
+    used.add(high32[0].number);
   }
-  for (const s of highZones) {
+  for (const s of highPool) {
     if (selected.length >= 4) break;
-    if (usedNumbers.has(s.number)) continue;
+    if (used.has(s.number)) continue;
     selected.push(s.number);
-    usedNumbers.add(s.number);
+    used.add(s.number);
   }
 
-  // 나머지 2개: 전체에서 점수 높은 순으로 채움
-  const rest = scored.filter(s => !usedNumbers.has(s.number));
+  const rest = scored.filter(s => !used.has(s.number));
   rest.sort((a, b) => b.score - a.score);
   for (const s of rest) {
     if (selected.length >= 6) break;
@@ -315,36 +335,72 @@ function zoneFallback(scored: WeightedScore[], rng: () => number): number[] {
   return selected.sort((a, b) => a - b);
 }
 
-// ─── 제약조건 검증 (v2.0 강화) ───────────────────────────────────
+// ─── 제약조건: 개별 번호 수준 ────────────────────────────────────
 
 function validateConstraints(numbers: number[]): boolean {
-  // (1) 합계: 100~175 (v1.0 유지)
   const sum = numbers.reduce((a, b) => a + b, 0);
   if (sum < 100 || sum > 175) return false;
 
-  // (2) 홀짝 균형: 최소 2개씩 (v1.0 유지)
   const oddCount = numbers.filter(n => n % 2 === 1).length;
-  const evenCount = 6 - oddCount;
-  if (oddCount < 2 || evenCount < 2) return false;
+  if (oddCount < 2 || oddCount > 4) return false;
 
-  // (3) 고저 균형: 최소 2개씩 (v1.0 유지)
   const lowCount = numbers.filter(n => n <= 22).length;
-  const highCount = 6 - lowCount;
-  if (lowCount < 2 || highCount < 2) return false;
+  if (lowCount < 2 || lowCount > 4) return false;
 
-  // (4) 색상 분포: 최소 3그룹 (v1.0 유지)
   const colorGroups = new Set(numbers.map(n => getBallColorGroup(n)));
   if (colorGroups.size < 3) return false;
 
-  // (5) ★ NEW: 비인기 구간(32~45) 최소 1개 포함
-  // 게임이론 핵심: 32~45 영역은 생일 편향 밖 → 분할 확률 감소
-  const highZoneCount = numbers.filter(n => n >= 32).length;
-  if (highZoneCount < 1) return false;
+  if (numbers.filter(n => n >= 32).length < 1) return false;
 
-  // (6) ★ NEW: 끝자리 다양성 최소 4종
-  // 같은 끝자리 번호를 고르면 인기 패턴에 겹칠 확률 상승
   const lastDigits = new Set(numbers.map(n => n % 10));
   if (lastDigits.size < 4) return false;
+
+  return true;
+}
+
+// ─── 제약조건: 조합 수준 인기 패턴 차단 ─────────────────────────
+
+/**
+ * 조합 자체가 "인기 패턴"인지 검출
+ * 사람들이 즐겨 쓰는 조합 패턴을 회피하여 분할 위험을 감소
+ *
+ * 차단 패턴:
+ * 1. 등차수열 (5,10,15,20,25,30)
+ * 2. 동일 10단위대에 4개 이상 (31,32,34,35,37,39)
+ * 3. 전부 홀수 또는 전부 짝수 (이미 위에서 차단)
+ * 4. 연번 3개 이상 연속 (11,12,13 → 사람들이 의외로 많이 선택)
+ */
+function validateCombinationAntiPopularity(numbers: number[]): boolean {
+  const sorted = [...numbers].sort((a, b) => a - b);
+
+  // (1) 등차수열 검출: 6개가 일정 간격이면 차단
+  const diffs: number[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    diffs.push(sorted[i] - sorted[i - 1]);
+  }
+  const allSameDiff = diffs.every(d => d === diffs[0]);
+  if (allSameDiff) return false;
+
+  // (2) 동일 10단위대 4개 이상 차단
+  const decades = new Map<number, number>();
+  for (const n of sorted) {
+    const dec = Math.floor((n - 1) / 10);
+    decades.set(dec, (decades.get(dec) || 0) + 1);
+  }
+  for (const count of decades.values()) {
+    if (count >= 4) return false;
+  }
+
+  // (3) 3개 이상 연속번호 차단 (인기 패턴)
+  let consecutiveRun = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === sorted[i - 1] + 1) {
+      consecutiveRun++;
+      if (consecutiveRun >= 3) return false;
+    } else {
+      consecutiveRun = 1;
+    }
+  }
 
   return true;
 }

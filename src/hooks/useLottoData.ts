@@ -3,13 +3,13 @@ import { fetchLottoData, refreshLottoData } from '../services/lottoApi';
 import { calculateFrequencies, getHotNumbers, getColdNumbers } from '../analysis/frequencyAnalysis';
 import { chiSquareTest } from '../analysis/statisticalTests';
 import { generateExpertPick } from '../analysis/numberGenerator';
-import { AppState, AnalysisResult, LottoDrawResult } from '../types/lotto';
+import { AppState, AnalysisResult, LottoDrawResult, StrategyInfo } from '../types/lotto';
 
 function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResult {
   const frequencies = calculateFrequencies(draws);
   const hotNumbers = getHotNumbers(frequencies);
   const coldNumbers = getColdNumbers(frequencies);
-  const expertPick = generateExpertPick(draws, timestamp);
+  const { numbers: expertPick, strategy } = generateExpertPick(draws, timestamp);
   const chiResult = chiSquareTest(frequencies, draws.length);
   const latestDraw = draws[draws.length - 1].drawNo;
 
@@ -27,6 +27,7 @@ function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResul
     isUniform: chiResult.isUniform,
     generatedAt: timestamp,
     nextDrawNo: latestDraw + 1,
+    strategy,
   };
 }
 

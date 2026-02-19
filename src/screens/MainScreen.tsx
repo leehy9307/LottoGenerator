@@ -129,11 +129,11 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Expert Pick */}
+            {/* Expert Pick v2.0 */}
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
-                title="EXPERT PICK"
-                subtitle="시간 엔트로피 + 복합 알고리즘 추천"
+                title="EXPERT PICK v2.0"
+                subtitle="8-Factor AI + 게임이론 앙상블"
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
@@ -142,7 +142,7 @@ export default function MainScreen() {
                 triggerKey={triggerKey}
               />
               <View style={styles.expertInfo}>
-                <InfoRow label="알고리즘" value="빈도 + 최근성 + 모멘텀 + 갭 + 시간 엔트로피" />
+                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (8-Factor)`} />
                 <InfoRow
                   label="합계"
                   value={`${analysis.expertPick.reduce((a, b) => a + b, 0)} (적정: 100~175)`}
@@ -152,9 +152,33 @@ export default function MainScreen() {
                   value={`${analysis.expertPick.filter(n => n % 2 === 1).length}:${analysis.expertPick.filter(n => n % 2 === 0).length}`}
                 />
                 <InfoRow
+                  label="비인기 점수"
+                  value={`${(analysis.strategy.antiPopularityScore * 100).toFixed(0)}% (높을수록 유리)`}
+                />
+                <InfoRow
+                  label="기대값"
+                  value={`${analysis.strategy.expectedValue > 0 ? '+' : ''}${analysis.strategy.expectedValue}원/게임`}
+                />
+                <InfoRow
+                  label="추정 1등"
+                  value={analysis.strategy.estimatedJackpot}
+                />
+                <InfoRow
+                  label="전략 신뢰도"
+                  value={`${(analysis.strategy.confidenceScore * 100).toFixed(0)}%`}
+                />
+                <InfoRow
                   label="생성 시각"
                   value={formatTime(analysis.generatedAt)}
                 />
+              </View>
+              <View style={styles.strategyBadge}>
+                <Text style={[
+                  styles.strategyBadgeText,
+                  { color: recommendationColor(analysis.strategy.recommendation) }
+                ]}>
+                  {recommendationLabel(analysis.strategy.recommendation)}
+                </Text>
               </View>
             </GlassCard>
 
@@ -194,19 +218,37 @@ export default function MainScreen() {
             {/* 번호 재생성 버튼 (시간 엔트로피만 갱신) */}
             <TouchableOpacity style={styles.regenerateBtn} onPress={regenerate} activeOpacity={0.7}>
               <Text style={styles.regenerateText}>🎲  번호 다시 생성</Text>
-              <Text style={styles.regenerateHint}>현재 시각 기반으로 Expert Pick을 재계산합니다</Text>
+              <Text style={styles.regenerateHint}>8-Factor AI + 게임이론 알고리즘으로 재생성합니다</Text>
             </TouchableOpacity>
           </>
         ) : null}
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            로또는 완전한 랜덤 게임입니다. 통계 분석은 참고용이며{'\n'}당첨을 보장하지 않습니다.
+            로또는 완전한 랜덤 게임입니다. AI 분석 및 게임이론 전략은{'\n'}기대값 최적화 목적이며 당첨을 보장하지 않습니다.
           </Text>
         </View>
       </ScrollView>
     </GradientBackground>
   );
+}
+
+function recommendationColor(rec: string): string {
+  switch (rec) {
+    case 'strong_buy': return '#4CAF50';
+    case 'buy': return '#8BC34A';
+    case 'neutral': return COLORS.gold;
+    default: return '#FF6B6B';
+  }
+}
+
+function recommendationLabel(rec: string): string {
+  switch (rec) {
+    case 'strong_buy': return 'STRONG BUY — 기대값 양수 구간';
+    case 'buy': return 'BUY — 이월로 기대값 개선';
+    case 'neutral': return 'NEUTRAL — 일반 구매 구간';
+    default: return 'SKIP — 기대값 불리';
+  }
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -354,6 +396,21 @@ const styles = StyleSheet.create({
     color: COLORS.textTertiary,
     fontSize: 10,
     marginTop: 4,
+  },
+  strategyBadge: {
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+  },
+  strategyBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   footer: {
     marginTop: 24,

@@ -130,11 +130,11 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Expert Pick v2.0 */}
+            {/* Expert Pick v4.0 */}
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
-                title="EXPERT PICK v2.0"
-                subtitle="8-Factor AI + 게임이론 앙상블"
+                title="EXPERT PICK v4.0"
+                subtitle="5-Model AI Ensemble + Pool Selection"
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
@@ -143,7 +143,15 @@ export default function MainScreen() {
                 triggerKey={triggerKey}
               />
               <View style={styles.expertInfo}>
-                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (8-Factor)`} />
+                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (5-Model Ensemble)`} />
+                <InfoRow
+                  label="Focus Pool"
+                  value={`${analysis.strategy.poolSize}개 / 45개`}
+                />
+                <InfoRow
+                  label="모델 합의도"
+                  value={`${(analysis.strategy.modelAgreement * 100).toFixed(0)}%`}
+                />
                 <InfoRow
                   label="합계"
                   value={`${analysis.expertPick.reduce((a, b) => a + b, 0)} (적정: 100~175)`}
@@ -219,7 +227,7 @@ export default function MainScreen() {
             {/* 번호 재생성 버튼 (시간 엔트로피만 갱신) */}
             <TouchableOpacity style={styles.regenerateBtn} onPress={regenerate} activeOpacity={0.7}>
               <Text style={styles.regenerateText}>🎲  번호 다시 생성</Text>
-              <Text style={styles.regenerateHint}>8-Factor AI + 게임이론 알고리즘으로 재생성합니다</Text>
+              <Text style={styles.regenerateHint}>5-Model AI Ensemble + Pool Selection으로 재생성합니다</Text>
             </TouchableOpacity>
           </>
         ) : null}

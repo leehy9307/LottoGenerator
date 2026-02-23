@@ -11,6 +11,14 @@ export interface NumberFrequency {
   percentage: number;
 }
 
+export interface ModelWeights {
+  adaptiveFrequency: number;
+  bayesianPosterior: number;
+  momentumTrend: number;
+  markovTransition: number;
+  monteCarlo: number;
+}
+
 export interface StrategyInfo {
   algorithmVersion: string;
   factorSummary: string;           // 사용된 팩터 요약
@@ -20,6 +28,8 @@ export interface StrategyInfo {
   confidenceScore: number;         // 전략 신뢰도 (0~1)
   carryoverMisses: number;         // 이월 횟수 (0=이월 없음)
   estimatedJackpot: string;        // 추정 1등 당첨금 (표시용)
+  poolSize: number;                // Phase 1 풀 크기 (기본 18)
+  modelAgreement: number;          // 5-Model 합의도 (0~1)
 }
 
 export interface AnalysisResult {

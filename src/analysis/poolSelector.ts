@@ -6,11 +6,17 @@ import {
   markovTransitionScore,
   monteCarloScore,
 } from './advancedModels';
+import { spectralAnalysisScore } from './spectralModel';
+import { networkCentralityScore } from './networkModel';
+import { quantumInterferenceScore, hybridFusion } from './quantumScoring';
+import { findOptimalPoolSize } from './coverageOptimizer';
 
 /**
- * v4.0 Pool Selector — 5-Model Ensemble + Reciprocal Rank Fusion
+ * v5.0 Pool Selector — 7-Model Ensemble + Hybrid Fusion + Dynamic Pool Sizing
  *
- * Phase 1: 45개 번호를 5개 모델로 평가 → RRF로 순위 융합 → 상위 18개 풀
+ * Phase 1: 45개 번호를 7개 모델로 평가
+ *   → RRF + Quantum Interference Fusion
+ *   → Dynamic Pool Sizing (한계 EV 분석 → 최적 P*)
  */
 
 export interface PoolSelectionResult {
@@ -18,6 +24,8 @@ export interface PoolSelectionResult {
   poolSize: number;             // 풀 크기
   modelAgreement: number;       // 모델 합의도 (0~1)
   modelRanks: Map<string, Map<number, number>>; // 각 모델별 순위
+  optimalPoolSize: number;      // 동적 최적 풀 크기
+  partialMatchEV: number;       // 부분일치 기대값
 }
 
 interface ModelResult {
@@ -72,10 +80,10 @@ export function rankBasedFusion(
 // ─── Model Agreement 계산 ────────────────────────────────────────
 
 /**
- * 5개 모델의 상위 18개 번호 합의도 측정
+ * 7개 모델의 상위 N개 번호 합의도 측정
  *
- * 합의도 = 모든 모델의 Top-18에 공통으로 포함된 번호 비율
- * 완전 합의(모든 모델이 같은 18개) → 1.0
+ * 합의도 = 모든 모델의 Top-N에 공통으로 포함된 번호 비율
+ * 완전 합의(모든 모델이 같은 N개) → 1.0
  * 완전 불일치(겹치는 번호 없음) → 0.0 (실질적으로 불가능)
  */
 function calculateModelAgreement(
@@ -121,33 +129,43 @@ function checkDiversity(pool: number[]): boolean {
 // ─── Pool Selection (메인 함수) ──────────────────────────────────
 
 /**
- * 45개 번호에서 5-Model Ensemble로 상위 18개를 선택
+ * 45개 번호에서 7-Model Ensemble + Hybrid Fusion으로 최적 풀 선택
  *
  * @param draws 역대 추첨 데이터
- * @param poolSize 풀 크기 (기본 18)
- * @returns PoolSelectionResult
+ * @returns PoolSelectionResult (동적 풀 크기 포함)
  */
 export function selectPool(
   draws: LottoDrawResult[],
-  poolSize: number = 18,
 ): PoolSelectionResult {
-  // 5개 모델 실행
+  // 7개 모델 실행
   const modelResults: ModelResult[] = [
     { name: 'adaptiveFrequency', scores: adaptiveFrequencyScore(draws) },
     { name: 'bayesianPosterior', scores: bayesianPosteriorScore(draws) },
     { name: 'momentumTrend', scores: momentumTrendScore(draws) },
     { name: 'markovTransition', scores: markovTransitionScore(draws) },
     { name: 'monteCarlo', scores: monteCarloScore(draws) },
+    { name: 'spectralAnalysis', scores: spectralAnalysisScore(draws) },
+    { name: 'networkCentrality', scores: networkCentralityScore(draws) },
   ];
 
   // RRF 융합
   const rrfScores = rankBasedFusion(modelResults);
 
-  // 상위 N개 선택
-  const sorted = Array.from(rrfScores.entries())
+  // Quantum Interference 융합
+  const interferenceScores = quantumInterferenceScore(modelResults);
+
+  // Hybrid Fusion: 0.6×RRF + 0.4×Interference
+  const fusedScores = hybridFusion(rrfScores, interferenceScores);
+
+  // 융합 점수 기준 정렬
+  const sorted = Array.from(fusedScores.entries())
     .sort((a, b) => b[1] - a[1]);
 
-  let pool = sorted.slice(0, poolSize).map(e => e[0]);
+  // Dynamic Pool Sizing: 한계 EV 분석으로 최적 풀 크기 결정
+  const rankedNumbers = sorted.map(([num, score]) => ({ number: num, score }));
+  const { optimalSize, partialMatchEV } = findOptimalPoolSize(rankedNumbers);
+
+  let pool = sorted.slice(0, optimalSize).map(e => e[0]);
 
   // 다양성 체크 — 부족하면 누락된 구간에서 보충
   if (!checkDiversity(pool)) {
@@ -176,7 +194,7 @@ export function selectPool(
   pool.sort((a, b) => a - b);
 
   // 모델 합의도 계산
-  const modelAgreement = calculateModelAgreement(modelResults, poolSize);
+  const modelAgreement = calculateModelAgreement(modelResults, optimalSize);
 
   // 모델별 순위 (디버깅/메타데이터 용)
   const modelRanks = new Map<string, Map<number, number>>();
@@ -190,5 +208,12 @@ export function selectPool(
     modelRanks.set(model.name, ranks);
   }
 
-  return { pool, poolSize: pool.length, modelAgreement, modelRanks };
+  return {
+    pool,
+    poolSize: pool.length,
+    modelAgreement,
+    modelRanks,
+    optimalPoolSize: optimalSize,
+    partialMatchEV,
+  };
 }

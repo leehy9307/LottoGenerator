@@ -6,29 +6,32 @@ import {
 } from './gameTheory';
 import { normalizeScores } from './trendAnalysis';
 import { selectPool } from './poolSelector';
+import { evolveOptimalCombination } from './geneticSelector';
+import { scoreCombinationProfile, buildWinningProfile } from './profileMatcher';
 import { getBallColorGroup } from '../constants/ballColors';
 
-const ALGORITHM_VERSION = '4.0.0';
+const ALGORITHM_VERSION = '5.0.0';
 
 /**
  * ┌─────────────────────────────────────────────────────────────┐
- * │  v4.0 Expert-Grade 알고리즘 — Pool Concentration Strategy   │
+ * │  v5.0 Expert-Grade — Ultimate Ensemble + Genetic Algorithm  │
  * ├─────────────────────────────────────────────────────────────┤
  * │                                                             │
- * │  핵심 변경 (vs v3.0):                                       │
- * │  ① 45개 전체 선택 → 18개 풀 집중 후 6개 선택               │
- * │  ② 단일 가중합 → 5-Model Ensemble (RRF 융합)               │
- * │  ③ Markov Chain + Monte Carlo 신규 도입                    │
- * │  ④ 게임이론(비인기+쌍상관) Phase 2에서 계속 적용           │
+ * │  핵심 변경 (vs v4.0):                                       │
+ * │  ① 5-Model → 7-Model (Spectral + Network 추가)             │
+ * │  ② RRF → Hybrid Fusion (RRF + Quantum Interference)        │
+ * │  ③ 고정 18 → Dynamic Pool Sizing (한계 EV)                 │
+ * │  ④ Temperature Sampling → Genetic Algorithm Phase 2        │
+ * │  ⑤ Winning Profile Matching (구조적 프로필 일치도)          │
  * │                                                             │
- * │  Phase 1: Pool Selection (45 → 18)                         │
- * │    5개 모델 → RRF → 상위 18개 = Focus Pool                │
+ * │  Phase 1: Pool Selection (45 → P*)                          │
+ * │    7개 모델 → RRF + Quantum Interference → Dynamic P*       │
  * │                                                             │
- * │  Phase 2: Selection (18 → 6)                               │
- * │    풀 내 가중 샘플링 + 제약조건 + 게임이론                 │
+ * │  Phase 2: Selection (P* → 6) via Genetic Algorithm          │
+ * │    Population 200 × 50 gen, AntiPop+Profile+Coverage        │
+ * │    Fallback: Temperature sampling (안전장치)                │
  * │                                                             │
- * │  Phase 3: Validation                                       │
- * │    제약조건 재검증 + 인기 패턴 차단 + 충돌 검사            │
+ * │  Phase 3: Validation + Profile Match + Partial EV           │
  * │                                                             │
  * └─────────────────────────────────────────────────────────────┘
  */
@@ -53,7 +56,7 @@ function createTimeSeed(): number {
     ^ (d.getMinutes() * 16777259)) >>> 0;
 }
 
-// ─── Expert Pick v4.0 ────────────────────────────────────────────
+// ─── Expert Pick v5.0 ────────────────────────────────────────────
 
 export interface ExpertPickResult {
   numbers: number[];
@@ -61,11 +64,11 @@ export interface ExpertPickResult {
 }
 
 /**
- * Expert Pick v4.0 — 2-Phase Pool Concentration 알고리즘
+ * Expert Pick v5.0 — 7-Model Ensemble + Genetic Algorithm
  *
- * Phase 1: 5-Model Ensemble → RRF → 18개 Focus Pool
- * Phase 2: 풀 내 가중 샘플링 (게임이론 + 쌍 상관관계)
- * Phase 3: 제약조건 + 인기 패턴 차단 + 최근 번호 충돌 검사
+ * Phase 1: 7-Model Ensemble → Hybrid Fusion → Dynamic Pool (P*)
+ * Phase 2: Genetic Algorithm (P* → 6) | Fallback: Temperature Sampling
+ * Phase 3: Validation + Profile Match + Partial Match EV
  */
 export function generateExpertPick(
   draws: LottoDrawResult[],
@@ -73,38 +76,49 @@ export function generateExpertPick(
   carryoverMisses: number = 0,
 ): ExpertPickResult {
   const now = timestamp ? new Date(timestamp) : new Date();
+  const seed = createTimeSeed();
+  const rng = mulberry32(seed);
 
   // ══════════════════════════════════════════════════════════════
-  // Phase 1: Pool Selection (45 → 18)
+  // Phase 1: Pool Selection (45 → P*)
   // ══════════════════════════════════════════════════════════════
 
-  const poolResult = selectPool(draws, 18);
+  const poolResult = selectPool(draws);
   let pool = poolResult.pool;
-  let currentPoolSize = pool.length;
 
   // ══════════════════════════════════════════════════════════════
-  // Phase 2: Selection (pool → 6)
+  // Phase 2: Selection (pool → 6) via Genetic Algorithm
   // ══════════════════════════════════════════════════════════════
 
-  // 풀 내 번호에 대한 게임이론 점수 계산
   const antiPopScores = calculateAntiPopularity(draws);
   const pairScores = calculatePairCorrelation(draws);
   const normAntiPop = normalizeScores(antiPopScores);
   const normPair = normalizeScores(pairScores);
 
-  // 풀 내 번호별 Phase 2 점수 계산
-  const poolScored = buildPoolScores(pool, normAntiPop, normPair, now);
+  // GA 시도
+  let numbers = evolveOptimalCombination(pool, draws, normAntiPop, normPair, rng);
 
-  // 제약조건 충족하는 6개 선택 (풀 확장 폴백 포함)
-  const { numbers, usedPoolSize } = selectFromPool(
-    poolScored,
-    pool,
-    draws,
-    currentPoolSize,
-  );
+  // 최근 2회 당첨번호 충돌 검사
+  const recentNumbers = new Set<number>();
+  const sortedDraws = [...draws].sort((a, b) => b.drawNo - a.drawNo);
+  for (let i = 0; i < Math.min(2, sortedDraws.length); i++) {
+    for (const n of sortedDraws[i].numbers) {
+      recentNumbers.add(n);
+    }
+  }
+
+  // GA 결과 검증 (최근 번호 충돌 체크 포함)
+  if (numbers && validateRecentCollision(numbers, recentNumbers)) {
+    // GA 성공
+  } else {
+    // Fallback: Temperature Sampling (v4.0 방식)
+    const poolScored = buildPoolScores(pool, normAntiPop, normPair, now, rng);
+    const fallbackResult = selectFromPool(poolScored, pool, draws, pool.length, recentNumbers);
+    numbers = fallbackResult.numbers;
+  }
 
   // ══════════════════════════════════════════════════════════════
-  // Phase 3: 전략 메타데이터
+  // Phase 3: 전략 메타데이터 + Profile Match
   // ══════════════════════════════════════════════════════════════
 
   const carryover = analyzeCarryover(carryoverMisses);
@@ -113,23 +127,30 @@ export function generateExpertPick(
     0,
   ) / 6;
 
+  // Profile Match 점수
+  const profile = buildWinningProfile(draws);
+  const profileMatchScore = scoreCombinationProfile(numbers, profile);
+
   const strategy: StrategyInfo = {
     algorithmVersion: ALGORITHM_VERSION,
-    factorSummary: '5-Model Ensemble(RRF) + Pool Selection + 게임이론',
+    factorSummary: '7-Model Ensemble(RRF+QIF) + Genetic Algorithm',
     antiPopularityScore: Math.round(avgAntiPop * 100) / 100,
     expectedValue: carryover.expectedValue,
     recommendation: carryover.recommendation,
     confidenceScore: Math.round(carryover.confidenceScore * 100) / 100,
     carryoverMisses,
     estimatedJackpot: formatKoreanWon(carryover.estimatedJackpot),
-    poolSize: usedPoolSize,
+    poolSize: poolResult.poolSize,
     modelAgreement: Math.round(poolResult.modelAgreement * 100) / 100,
+    profileMatchScore: Math.round(profileMatchScore * 100) / 100,
+    partialMatchEV: poolResult.partialMatchEV,
+    optimalPoolSize: poolResult.optimalPoolSize,
   };
 
   return { numbers, strategy };
 }
 
-// ─── Phase 2: 풀 내 점수 계산 ────────────────────────────────────
+// ─── Phase 2 Fallback: 풀 내 점수 계산 ─────────────────────────
 
 interface PoolNumberScore {
   number: number;
@@ -137,20 +158,15 @@ interface PoolNumberScore {
 }
 
 /**
- * Phase 2 점수 = Anti-Popularity(50%) + Pair Correlation(30%) + Temporal(20%)
- *
- * 풀이 이미 5-Model Ensemble로 큐레이션되었으므로,
- * Phase 2에서는 게임이론과 다양성에 집중
+ * Fallback Phase 2 점수 = Anti-Popularity(50%) + Pair Correlation(30%) + Temporal(20%)
  */
 function buildPoolScores(
   pool: number[],
   normAntiPop: Map<number, number>,
   normPair: Map<number, number>,
   now: Date,
+  rng: () => number,
 ): PoolNumberScore[] {
-  const seed = createTimeSeed();
-  const rng = mulberry32(seed);
-
   return pool.map(n => {
     const antiPop = normAntiPop.get(n) || 0;
     const pair = normPair.get(n) || 0;
@@ -166,17 +182,8 @@ function buildPoolScores(
   });
 }
 
-// ─── Phase 2: 풀 내 선택 + 풀 확장 폴백 ─────────────────────────
+// ─── Phase 2 Fallback: 풀 내 선택 + 풀 확장 폴백 ───────────────
 
-/**
- * Temperature 기반 가중 샘플링 (T=1.5)
- * 풀이 이미 큐레이션되어 있으므로 v3.0의 T=1.8보다 낮게 설정
- *
- * 폴백 전략:
- * - 500회 실패 → 풀 22개로 확장
- * - 750회 실패 → 풀 27개로 확장
- * - 최종 폴백 → zoneFallback
- */
 const TEMPERATURE = 1.5;
 
 function selectFromPool(
@@ -184,18 +191,10 @@ function selectFromPool(
   originalPool: number[],
   draws: LottoDrawResult[],
   poolSize: number,
+  recentNumbers: Set<number>,
 ): { numbers: number[]; usedPoolSize: number } {
   const seed = createTimeSeed();
   const rng = mulberry32(seed);
-
-  // 최근 5회 당첨번호 (충돌 검사용)
-  const recentNumbers = new Set<number>();
-  const sortedDraws = [...draws].sort((a, b) => b.drawNo - a.drawNo);
-  for (let i = 0; i < Math.min(2, sortedDraws.length); i++) {
-    for (const n of sortedDraws[i].numbers) {
-      recentNumbers.add(n);
-    }
-  }
 
   let currentScored = [...poolScored];
   let usedPoolSize = poolSize;
@@ -398,7 +397,6 @@ function validateCombinationAntiPopularity(numbers: number[]): boolean {
 
 /**
  * 최근 2회 당첨번호와 4개 이상 겹치면 차단
- * (사람들이 최근 당첨번호를 그대로 쓰는 경향 → 분할 위험)
  */
 function validateRecentCollision(
   numbers: number[],

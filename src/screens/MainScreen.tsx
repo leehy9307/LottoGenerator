@@ -130,11 +130,11 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Expert Pick v4.0 */}
+            {/* Expert Pick v5.0 */}
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
-                title="EXPERT PICK v4.0"
-                subtitle="5-Model AI Ensemble + Pool Selection"
+                title="EXPERT PICK v5.0"
+                subtitle="7-Model AI Ensemble + Genetic Algorithm"
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
@@ -143,14 +143,22 @@ export default function MainScreen() {
                 triggerKey={triggerKey}
               />
               <View style={styles.expertInfo}>
-                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (5-Model Ensemble)`} />
+                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (7-Model Ensemble + GA)`} />
                 <InfoRow
                   label="Focus Pool"
-                  value={`${analysis.strategy.poolSize}개 / 45개`}
+                  value={`${analysis.strategy.poolSize}개 / 45개 (최적: ${analysis.strategy.optimalPoolSize})`}
                 />
                 <InfoRow
                   label="모델 합의도"
                   value={`${(analysis.strategy.modelAgreement * 100).toFixed(0)}%`}
+                />
+                <InfoRow
+                  label="프로필 일치도"
+                  value={`${(analysis.strategy.profileMatchScore * 100).toFixed(0)}%`}
+                />
+                <InfoRow
+                  label="부분일치 EV"
+                  value={`${analysis.strategy.partialMatchEV > 0 ? '+' : ''}${analysis.strategy.partialMatchEV}원`}
                 />
                 <InfoRow
                   label="합계"
@@ -227,7 +235,7 @@ export default function MainScreen() {
             {/* 번호 재생성 버튼 (시간 엔트로피만 갱신) */}
             <TouchableOpacity style={styles.regenerateBtn} onPress={regenerate} activeOpacity={0.7}>
               <Text style={styles.regenerateText}>🎲  번호 다시 생성</Text>
-              <Text style={styles.regenerateHint}>5-Model AI Ensemble + Pool Selection으로 재생성합니다</Text>
+              <Text style={styles.regenerateHint}>7-Model AI Ensemble + Genetic Algorithm으로 재생성합니다</Text>
             </TouchableOpacity>
           </>
         ) : null}

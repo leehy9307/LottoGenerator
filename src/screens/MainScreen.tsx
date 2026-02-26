@@ -130,11 +130,11 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Expert Pick v5.0 */}
+            {/* Expert Pick v6.0 */}
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
-                title="EXPERT PICK v5.0"
-                subtitle="7-Model AI Ensemble + Genetic Algorithm"
+                title="EXPERT PICK v6.0"
+                subtitle="Game Theory + MCMC Sampler"
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
@@ -143,37 +143,45 @@ export default function MainScreen() {
                 triggerKey={triggerKey}
               />
               <View style={styles.expertInfo}>
-                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion} (7-Model Ensemble + GA)`} />
+                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion}`} />
                 <InfoRow
-                  label="Focus Pool"
-                  value={`${analysis.strategy.poolSize}개 / 45개 (최적: ${analysis.strategy.optimalPoolSize})`}
+                  label="비인기 회피율"
+                  value={`${(analysis.strategy.populationAvoidanceScore * 100).toFixed(0)}%`}
                 />
                 <InfoRow
-                  label="모델 합의도"
-                  value={`${(analysis.strategy.modelAgreement * 100).toFixed(0)}%`}
+                  label="구조 적합도"
+                  value={`${(analysis.strategy.structuralFitScore * 100).toFixed(0)}%`}
                 />
                 <InfoRow
-                  label="프로필 일치도"
-                  value={`${(analysis.strategy.profileMatchScore * 100).toFixed(0)}%`}
-                />
-                <InfoRow
-                  label="부분일치 EV"
-                  value={`${analysis.strategy.partialMatchEV > 0 ? '+' : ''}${analysis.strategy.partialMatchEV}원`}
+                  label="MCMC 수렴"
+                  value={isNaN(analysis.strategy.mcmcConvergence) ? 'Rejection' : `R-hat ${analysis.strategy.mcmcConvergence.toFixed(2)}`}
                 />
                 <InfoRow
                   label="합계"
-                  value={`${analysis.expertPick.reduce((a, b) => a + b, 0)} (적정: 100~175)`}
+                  value={`${analysis.expertPick.reduce((a, b) => a + b, 0)}`}
                 />
                 <InfoRow
                   label="홀:짝"
                   value={`${analysis.expertPick.filter(n => n % 2 === 1).length}:${analysis.expertPick.filter(n => n % 2 === 0).length}`}
                 />
                 <InfoRow
-                  label="비인기 점수"
-                  value={`${(analysis.strategy.antiPopularityScore * 100).toFixed(0)}% (높을수록 유리)`}
+                  label="추정 공동당첨자"
+                  value={`${analysis.strategy.estimatedCoWinners.toFixed(1)}명`}
                 />
                 <InfoRow
-                  label="기대값"
+                  label="5등 EV"
+                  value={`${analysis.strategy.expectedValueBreakdown.ev5.toFixed(0)}원`}
+                />
+                <InfoRow
+                  label="4등 EV"
+                  value={`${analysis.strategy.expectedValueBreakdown.ev4.toFixed(0)}원`}
+                />
+                <InfoRow
+                  label="3등 EV"
+                  value={`${analysis.strategy.expectedValueBreakdown.ev3.toFixed(1)}원`}
+                />
+                <InfoRow
+                  label="기대값 합계"
                   value={`${analysis.strategy.expectedValue > 0 ? '+' : ''}${analysis.strategy.expectedValue}원/게임`}
                 />
                 <InfoRow
@@ -181,13 +189,12 @@ export default function MainScreen() {
                   value={analysis.strategy.estimatedJackpot}
                 />
                 <InfoRow
-                  label="전략 신뢰도"
-                  value={`${(analysis.strategy.confidenceScore * 100).toFixed(0)}%`}
-                />
-                <InfoRow
                   label="생성 시각"
                   value={formatTime(analysis.generatedAt)}
                 />
+              </View>
+              <View style={styles.reasoningBox}>
+                <Text style={styles.reasoningText}>{analysis.strategy.reasoning}</Text>
               </View>
               <View style={styles.strategyBadge}>
                 <Text style={[
@@ -235,7 +242,7 @@ export default function MainScreen() {
             {/* 번호 재생성 버튼 (시간 엔트로피만 갱신) */}
             <TouchableOpacity style={styles.regenerateBtn} onPress={regenerate} activeOpacity={0.7}>
               <Text style={styles.regenerateText}>🎲  번호 다시 생성</Text>
-              <Text style={styles.regenerateHint}>7-Model AI Ensemble + Genetic Algorithm으로 재생성합니다</Text>
+              <Text style={styles.regenerateHint}>Game Theory + MCMC Sampler로 재생성합니다</Text>
             </TouchableOpacity>
           </>
         ) : null}
@@ -413,6 +420,18 @@ const styles = StyleSheet.create({
     color: COLORS.textTertiary,
     fontSize: 10,
     marginTop: 4,
+  },
+  reasoningBox: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  reasoningText: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    lineHeight: 17,
   },
   strategyBadge: {
     marginTop: 12,

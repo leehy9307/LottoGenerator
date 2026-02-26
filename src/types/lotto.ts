@@ -11,28 +11,22 @@ export interface NumberFrequency {
   percentage: number;
 }
 
-export interface ModelWeights {
-  adaptiveFrequency: number;
-  bayesianPosterior: number;
-  momentumTrend: number;
-  markovTransition: number;
-  monteCarlo: number;
-}
-
 export interface StrategyInfo {
   algorithmVersion: string;
-  factorSummary: string;           // 사용된 팩터 요약
-  antiPopularityScore: number;     // 비인기 점수 (0~1, 높을수록 좋음)
-  expectedValue: number;           // 기대값 (원)
+  factorSummary: string;
+  populationAvoidanceScore: number;  // 비인기 점수 (0~1)
+  structuralFitScore: number;        // 구조 적합도 (0~1)
+  mcmcConvergence: number;           // R-hat (< 1.1 = 수렴)
+  expectedValue: number;             // 세후 기대값 (원)
+  expectedValueBreakdown: {          // 등수별 EV
+    ev3: number; ev4: number; ev5: number;
+  };
+  estimatedCoWinners: number;        // 추정 공동당첨자
   recommendation: 'strong_buy' | 'buy' | 'neutral' | 'skip';
-  confidenceScore: number;         // 전략 신뢰도 (0~1)
-  carryoverMisses: number;         // 이월 횟수 (0=이월 없음)
-  estimatedJackpot: string;        // 추정 1등 당첨금 (표시용)
-  poolSize: number;                // Phase 1 풀 크기
-  modelAgreement: number;          // 7-Model 합의도 (0~1)
-  profileMatchScore: number;       // 프로필 일치도 (0~1)
-  partialMatchEV: number;          // 부분일치 기대값 (원)
-  optimalPoolSize: number;         // 동적 최적 풀 크기
+  reasoning: string;                 // 추천 이유 (한국어)
+  confidenceScore: number;           // MCMC 수렴 기반 신뢰도
+  carryoverMisses: number;
+  estimatedJackpot: string;
 }
 
 export interface AnalysisResult {

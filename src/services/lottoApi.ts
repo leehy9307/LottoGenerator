@@ -193,7 +193,7 @@ export async function fetchLottoData(): Promise<{
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
-  const startDraw = Math.max(1, latestDraw - 78);
+  const startDraw = Math.max(1, latestDraw - 200);
 
   // 1) 캐시 체크 (TTL 내)
   const cached = await loadCache();
@@ -250,7 +250,7 @@ export async function refreshLottoData(): Promise<{
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
-  const startDraw = Math.max(1, latestDraw - 78);
+  const startDraw = Math.max(1, latestDraw - 200);
   const allDrawNos = Array.from({ length: latestDraw - startDraw + 1 }, (_, i) => startDraw + i);
 
   // 새로고침: GitHub → 동행복권 → 캐시 → 폴백

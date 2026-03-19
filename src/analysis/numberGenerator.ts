@@ -16,21 +16,24 @@ import {
   formatKoreanWon,
 } from './expectedValue';
 
-const ALGORITHM_VERSION = '6.0.0';
+const ALGORITHM_VERSION = '7.0.0';
 
 /**
  * ┌──────────────────────────────────────────────────────────────┐
- * │  v6.0 — Game Theory + MCMC Sampler                          │
+ * │  v7.0 — Advanced Game Theory + SA-MCMC + Pattern Avoidance  │
  * ├──────────────────────────────────────────────────────────────┤
  * │                                                              │
- * │  Philosophy: "Don't predict. Optimize the game."             │
+ * │  Philosophy: "Don't predict. Optimize the game.              │
+ * │              Choose what others won't."                      │
  * │                                                              │
  * │  Pipeline:                                                   │
- * │  [1] Population Model    → 45-dim unpopularity vector        │
- * │  [2] Structural Profile  → Bayesian 8-dim validator          │
- * │  [3] MCMC Sampler        → optimal combination               │
- * │  [4] Expected Value      → financial analysis                │
- * │  [5] Orchestrator        → result + metadata                 │
+ * │  [1] Population Model    → 45-dim unpopularity (12 biases)  │
+ * │  [2] Structural Profile  → Bayesian 10-dim validator + AC   │
+ * │  [3] Pattern Avoidance   → explicit common pattern penalty  │
+ * │  [4] SA-MCMC Sampler     → simulated annealing optimizer    │
+ * │  [5] Multi-Candidate     → generate N, pick best            │
+ * │  [6] Expected Value      → financial analysis               │
+ * │  [7] Orchestrator        → result + metadata                │
  * │                                                              │
  * └──────────────────────────────────────────────────────────────┘
  */
@@ -42,14 +45,10 @@ export interface ExpertPickResult {
   strategy: StrategyInfo;
 }
 
+const NUM_CANDIDATES = 5; // Generate 5 candidates, pick the best
+
 /**
- * Expert Pick v6.0 — Game Theory + MCMC Sampler
- *
- * Stage 1: Build unpopularity vector (Population Model)
- * Stage 2: Build structural profile (Bayesian)
- * Stage 3: MCMC sampling with combined scoring
- * Stage 4: Expected value calculation
- * Stage 5: Assemble metadata
+ * Expert Pick v7.0 — Advanced Game Theory + SA-MCMC
  */
 export function generateExpertPick(
   draws: LottoDrawResult[],
@@ -57,53 +56,76 @@ export function generateExpertPick(
   carryoverMisses: number = 0,
 ): ExpertPickResult {
   // ════════════════════════════════════════════════════════════
-  // Stage 1: Population Model — what to avoid
+  // Stage 1: Population Model — 12 cognitive biases
   // ════════════════════════════════════════════════════════════
 
   const unpopVector = computeUnpopularityVector(draws);
 
   // ════════════════════════════════════════════════════════════
-  // Stage 2: Structural Profile — what structure is natural
+  // Stage 2: Structural Profile — 10 Bayesian dimensions + AC
   // ════════════════════════════════════════════════════════════
 
   const structProfile = buildStructuralProfile(draws);
 
   // ════════════════════════════════════════════════════════════
-  // Stage 3: MCMC Sampling — how to generate
+  // Stage 3: Combined Scoring Function
   // ════════════════════════════════════════════════════════════
 
-  // Combined scoring function for MCMC
   const scoreFn: MCMCScoringFn = (combo: number[]) => {
-    // Hard constraint check → -Infinity for invalid combos
+    // Hard constraint → immediate reject
     if (!passesHardConstraints(combo)) return -1000;
 
-    // Anti-popularity (geometric mean, 0~1)
+    // Anti-popularity (geometric mean with pattern penalty, 0~1)
     const antiPop = combinationUnpopularity(combo, unpopVector);
 
     // Structural fit (weighted Bayesian, 0~1)
     const structural = scoreCombinationStructure(combo, structProfile);
     if (structural.hardReject) return -1000;
 
-    // Combined log-density: log(antiPop) + log(structFit)
-    // Both in [0,1], log converts to negative → higher is better
+    // AC bonus: reward high arithmetic complexity
+    const acBonus = Math.min(structural.acValue / 15, 1.0) * 0.1;
+
+    // Combined log-density
     const logAntiPop = Math.log(Math.max(antiPop, 0.001));
     const logStruct = Math.log(Math.max(structural.totalScore, 0.001));
 
-    return logAntiPop * 0.6 + logStruct * 0.4;
+    // v7.0 weights: anti-popularity is king (55%), structure (30%), AC (15%)
+    return logAntiPop * 0.55 + logStruct * 0.30 + acBonus * 0.15;
   };
 
-  // Use timestamp as seed for reproducibility within same second
-  const seed = timestamp
+  // ════════════════════════════════════════════════════════════
+  // Stage 4: Multi-Candidate SA-MCMC Sampling
+  // ════════════════════════════════════════════════════════════
+
+  const baseSeed = timestamp
     ? (timestamp ^ (timestamp >>> 16)) >>> 0
     : undefined;
 
-  const mcmcResult = runMCMC(scoreFn, seed);
+  let bestNumbers: number[] = [];
+  let bestFinalScore = -Infinity;
+  let bestMcmcResult = runMCMC(scoreFn, baseSeed);
+
+  // Generate multiple candidates with different seeds
+  for (let candidate = 0; candidate < NUM_CANDIDATES; candidate++) {
+    const candidateSeed = baseSeed !== undefined
+      ? (baseSeed + candidate * 48611) >>> 0
+      : undefined;
+
+    const mcmcResult = runMCMC(scoreFn, candidateSeed);
+    const finalScore = scoreFn(mcmcResult.bestCombo);
+
+    if (finalScore > bestFinalScore) {
+      bestFinalScore = finalScore;
+      bestNumbers = mcmcResult.bestCombo;
+      bestMcmcResult = mcmcResult;
+    }
+  }
 
   // ════════════════════════════════════════════════════════════
-  // Stage 4: Expected Value — why this combo is good
+  // Stage 5: Expected Value — financial analysis
   // ════════════════════════════════════════════════════════════
 
-  const numbers = mcmcResult.bestCombo;
+  const numbers = bestNumbers;
   const antiPopScore = combinationUnpopularity(numbers, unpopVector);
   const structScore = scoreCombinationStructure(numbers, structProfile);
   const coWinners = estimateCoWinners(numbers, unpopVector);
@@ -111,21 +133,21 @@ export function generateExpertPick(
   const evResult = calculateExpectedValue(
     carryoverMisses,
     coWinners,
-    mcmcResult.converged,
+    bestMcmcResult.converged,
   );
 
   const jackpot = estimateJackpot(carryoverMisses, coWinners);
 
   // ════════════════════════════════════════════════════════════
-  // Stage 5: Assemble metadata
+  // Stage 6: Assemble metadata
   // ════════════════════════════════════════════════════════════
 
   const strategy: StrategyInfo = {
     algorithmVersion: ALGORITHM_VERSION,
-    factorSummary: `Game Theory + MCMC Sampler (${mcmcResult.method})`,
+    factorSummary: `SA-MCMC + Pattern Avoidance (${bestMcmcResult.method})`,
     populationAvoidanceScore: round2(antiPopScore),
     structuralFitScore: round2(structScore.totalScore),
-    mcmcConvergence: round3(mcmcResult.rHat),
+    mcmcConvergence: round3(bestMcmcResult.rHat),
     expectedValue: evResult.totalEV,
     expectedValueBreakdown: {
       ev3: evResult.evByRank.ev3,

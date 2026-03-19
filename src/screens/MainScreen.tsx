@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import GradientBackground from '../components/GradientBackground';
 import GlassCard from '../components/GlassCard';
 import NumberReveal from '../components/NumberReveal';
@@ -30,10 +31,10 @@ function formatTime(ts: number): string {
 
 function dataSourceLabel(source: string): { text: string; color: string } {
   switch (source) {
-    case 'github': return { text: '온라인 데이터', color: '#4CAF50' };
-    case 'api': return { text: '실시간 데이터', color: '#4CAF50' };
-    case 'cache': return { text: '캐시 데이터', color: '#2196F3' };
-    default: return { text: '오프라인 데이터', color: COLORS.gold };
+    case 'github': return { text: 'LIVE', color: COLORS.green };
+    case 'api': return { text: 'LIVE', color: COLORS.green };
+    case 'cache': return { text: 'CACHED', color: COLORS.cyan };
+    default: return { text: 'OFFLINE', color: COLORS.gold };
   }
 }
 
@@ -51,28 +52,33 @@ export default function MainScreen() {
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingTop: STATUS_BAR_HEIGHT + 16 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: STATUS_BAR_HEIGHT + 20 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* ─── Header ──────────────────────── */}
         <View style={styles.header}>
-          <Text style={styles.appTitle}>LOTTO GENERATOR</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.appTitle}>LOTTO</Text>
+            <View style={styles.versionPill}>
+              <Text style={styles.versionText}>v7.0</Text>
+            </View>
+          </View>
           <Text style={styles.appSubtitle}>
             {analysis
-              ? `${analysis.drawRange.from}회 ~ ${analysis.drawRange.to}회 분석 (${analysis.totalDraws}회)`
-              : '로또 6/45 통계 분석'}
+              ? `${analysis.drawRange.from} ~ ${analysis.drawRange.to}회 | ${analysis.totalDraws}회 분석`
+              : 'AI-Powered Number Analysis'}
           </Text>
           <View style={styles.badgeRow}>
             {!loading && (
-              <View style={[styles.badge, { borderColor: sourceInfo.color + '50' }]}>
+              <View style={[styles.badge, { borderColor: sourceInfo.color + '30' }]}>
                 <View style={[styles.badgeDot, { backgroundColor: sourceInfo.color }]} />
-                <Text style={[styles.badgeText, { color: sourceInfo.color }]}>{sourceInfo.text}</Text>
+                <Text style={[styles.badgeLabel, { color: sourceInfo.color }]}>{sourceInfo.text}</Text>
               </View>
             )}
             {analysis && (
-              <View style={[styles.badge, { borderColor: 'rgba(255,255,255,0.15)' }]}>
-                <Text style={styles.badgeTextDim}>
-                  다음 추첨: {analysis.nextDrawNo}회
+              <View style={[styles.badge, { borderColor: 'rgba(255,255,255,0.08)' }]}>
+                <Text style={styles.badgeLabelDim}>
+                  Next: {analysis.nextDrawNo}회
                 </Text>
               </View>
             )}
@@ -90,11 +96,81 @@ export default function MainScreen() {
           </GlassCard>
         ) : analysis ? (
           <>
-            {/* Hot Numbers */}
+            {/* ─── Expert Pick v7.0 (Main Feature) ──── */}
+            <GlassCard accentColor={COLORS.expertAccent}>
+              <SectionHeader
+                title="EXPERT PICK"
+                subtitle="SA-MCMC + Pattern Avoidance v7.0"
+                accentColor={COLORS.expertAccent}
+                emoji="✨"
+              />
+              <NumberReveal
+                numbers={analysis.expertPick}
+                triggerKey={triggerKey}
+              />
+
+              {/* Stats Grid */}
+              <View style={styles.statsGrid}>
+                <StatChip
+                  label="비인기"
+                  value={`${(analysis.strategy.populationAvoidanceScore * 100).toFixed(0)}%`}
+                  color={COLORS.green}
+                />
+                <StatChip
+                  label="구조"
+                  value={`${(analysis.strategy.structuralFitScore * 100).toFixed(0)}%`}
+                  color={COLORS.cyan}
+                />
+                <StatChip
+                  label="MCMC"
+                  value={isNaN(analysis.strategy.mcmcConvergence) ? 'Rej.' : `${analysis.strategy.mcmcConvergence.toFixed(2)}`}
+                  color={COLORS.purple}
+                />
+                <StatChip
+                  label="합계"
+                  value={`${analysis.expertPick.reduce((a, b) => a + b, 0)}`}
+                  color={COLORS.textSecondary}
+                />
+              </View>
+
+              {/* Detail rows */}
+              <View style={styles.detailSection}>
+                <InfoRow label="홀:짝 비율" value={`${analysis.expertPick.filter(n => n % 2 === 1).length}:${analysis.expertPick.filter(n => n % 2 === 0).length}`} />
+                <InfoRow label="추정 공동당첨자" value={`${analysis.strategy.estimatedCoWinners.toFixed(1)}명`} />
+                <InfoRow label="추정 1등 당첨금" value={analysis.strategy.estimatedJackpot} />
+                <View style={styles.divider} />
+                <InfoRow label="5등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev5.toFixed(0)}원`} />
+                <InfoRow label="4등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev4.toFixed(0)}원`} />
+                <InfoRow label="3등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev3.toFixed(1)}원`} />
+                <InfoRow
+                  label="기대값 합계"
+                  value={`${analysis.strategy.expectedValue > 0 ? '+' : ''}${analysis.strategy.expectedValue}원`}
+                  highlight={analysis.strategy.expectedValue > 0}
+                />
+              </View>
+
+              {/* Reasoning */}
+              <View style={styles.reasoningBox}>
+                <Text style={styles.reasoningText}>{analysis.strategy.reasoning}</Text>
+              </View>
+
+              {/* Recommendation badge */}
+              <View style={[styles.recBadge, { borderColor: recommendationColor(analysis.strategy.recommendation) + '25' }]}>
+                <View style={[styles.recDot, { backgroundColor: recommendationColor(analysis.strategy.recommendation) }]} />
+                <Text style={[styles.recText, { color: recommendationColor(analysis.strategy.recommendation) }]}>
+                  {recommendationLabel(analysis.strategy.recommendation)}
+                </Text>
+              </View>
+
+              {/* Generation time */}
+              <Text style={styles.genTime}>{formatTime(analysis.generatedAt)}</Text>
+            </GlassCard>
+
+            {/* ─── Hot Numbers ──────────────── */}
             <GlassCard accentColor={COLORS.hotAccent}>
               <SectionHeader
                 title="HOT NUMBERS"
-                subtitle="가장 많이 나온 번호 6개"
+                subtitle="가장 많이 나온 번호 Top 6"
                 accentColor={COLORS.hotAccent}
                 emoji="🔥"
               />
@@ -110,11 +186,11 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Cold Numbers */}
+            {/* ─── Cold Numbers ─────────────── */}
             <GlassCard accentColor={COLORS.coldAccent}>
               <SectionHeader
                 title="COLD NUMBERS"
-                subtitle="가장 적게 나온 번호 6개"
+                subtitle="가장 적게 나온 번호 Top 6"
                 accentColor={COLORS.coldAccent}
                 emoji="❄️"
               />
@@ -130,126 +206,65 @@ export default function MainScreen() {
               />
             </GlassCard>
 
-            {/* Expert Pick v6.0 */}
-            <GlassCard accentColor={COLORS.expertAccent}>
-              <SectionHeader
-                title="EXPERT PICK v6.0"
-                subtitle="Game Theory + MCMC Sampler"
-                accentColor={COLORS.expertAccent}
-                emoji="✨"
-              />
-              <NumberReveal
-                numbers={analysis.expertPick}
-                triggerKey={triggerKey}
-              />
-              <View style={styles.expertInfo}>
-                <InfoRow label="알고리즘" value={`v${analysis.strategy.algorithmVersion}`} />
-                <InfoRow
-                  label="비인기 회피율"
-                  value={`${(analysis.strategy.populationAvoidanceScore * 100).toFixed(0)}%`}
-                />
-                <InfoRow
-                  label="구조 적합도"
-                  value={`${(analysis.strategy.structuralFitScore * 100).toFixed(0)}%`}
-                />
-                <InfoRow
-                  label="MCMC 수렴"
-                  value={isNaN(analysis.strategy.mcmcConvergence) ? 'Rejection' : `R-hat ${analysis.strategy.mcmcConvergence.toFixed(2)}`}
-                />
-                <InfoRow
-                  label="합계"
-                  value={`${analysis.expertPick.reduce((a, b) => a + b, 0)}`}
-                />
-                <InfoRow
-                  label="홀:짝"
-                  value={`${analysis.expertPick.filter(n => n % 2 === 1).length}:${analysis.expertPick.filter(n => n % 2 === 0).length}`}
-                />
-                <InfoRow
-                  label="추정 공동당첨자"
-                  value={`${analysis.strategy.estimatedCoWinners.toFixed(1)}명`}
-                />
-                <InfoRow
-                  label="5등 EV"
-                  value={`${analysis.strategy.expectedValueBreakdown.ev5.toFixed(0)}원`}
-                />
-                <InfoRow
-                  label="4등 EV"
-                  value={`${analysis.strategy.expectedValueBreakdown.ev4.toFixed(0)}원`}
-                />
-                <InfoRow
-                  label="3등 EV"
-                  value={`${analysis.strategy.expectedValueBreakdown.ev3.toFixed(1)}원`}
-                />
-                <InfoRow
-                  label="기대값 합계"
-                  value={`${analysis.strategy.expectedValue > 0 ? '+' : ''}${analysis.strategy.expectedValue}원/게임`}
-                />
-                <InfoRow
-                  label="추정 1등"
-                  value={analysis.strategy.estimatedJackpot}
-                />
-                <InfoRow
-                  label="생성 시각"
-                  value={formatTime(analysis.generatedAt)}
-                />
-              </View>
-              <View style={styles.reasoningBox}>
-                <Text style={styles.reasoningText}>{analysis.strategy.reasoning}</Text>
-              </View>
-              <View style={styles.strategyBadge}>
-                <Text style={[
-                  styles.strategyBadgeText,
-                  { color: recommendationColor(analysis.strategy.recommendation) }
-                ]}>
-                  {recommendationLabel(analysis.strategy.recommendation)}
-                </Text>
-              </View>
-            </GlassCard>
-
-            {/* Stats */}
+            {/* ─── Stats Card ──────────────── */}
             <GlassCard>
               <SectionHeader
-                title="통계 정보"
-                subtitle="카이제곱 균일성 검정"
+                title="STATISTICS"
+                subtitle="Chi-Square Uniformity Test"
                 accentColor={COLORS.textSecondary}
                 emoji="📊"
               />
               <InfoRow
-                label="χ² 검정 p-value"
+                label="p-value"
                 value={analysis.chiSquareP.toFixed(4)}
               />
               <InfoRow
-                label="균일 분포"
-                value={analysis.isUniform ? '균일함 (p > 0.05)' : '편향 감지 (p <= 0.05)'}
+                label="분포 판정"
+                value={analysis.isUniform ? '균일 분포 (p > 0.05)' : '편향 감지 (p ≤ 0.05)'}
               />
             </GlassCard>
 
-            {/* 새로고침 버튼 (데이터 강제 갱신) */}
-            <TouchableOpacity
-              style={styles.refreshBtn}
-              onPress={refresh}
-              activeOpacity={0.7}
-              disabled={refreshing}
-            >
-              {refreshing ? (
-                <ActivityIndicator size="small" color={COLORS.coldAccent} />
-              ) : (
-                <Text style={styles.refreshText}>🔄  데이터 새로고침</Text>
-              )}
-              <Text style={styles.refreshHint}>API에서 최신 당첨 데이터를 다시 가져옵니다</Text>
-            </TouchableOpacity>
+            {/* ─── Action Buttons ──────────── */}
+            <View style={styles.buttonGroup}>
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={regenerate}
+                activeOpacity={0.7}
+              >
+                <LinearGradient
+                  colors={['rgba(167, 139, 250, 0.15)', 'rgba(0, 194, 255, 0.08)']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+                />
+                <Text style={styles.primaryBtnText}>번호 다시 생성</Text>
+                <Text style={styles.btnHint}>SA-MCMC v7.0으로 재생성</Text>
+              </TouchableOpacity>
 
-            {/* 번호 재생성 버튼 (시간 엔트로피만 갱신) */}
-            <TouchableOpacity style={styles.regenerateBtn} onPress={regenerate} activeOpacity={0.7}>
-              <Text style={styles.regenerateText}>🎲  번호 다시 생성</Text>
-              <Text style={styles.regenerateHint}>Game Theory + MCMC Sampler로 재생성합니다</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={refresh}
+                activeOpacity={0.7}
+                disabled={refreshing}
+              >
+                {refreshing ? (
+                  <ActivityIndicator size="small" color={COLORS.textSecondary} />
+                ) : (
+                  <>
+                    <Text style={styles.secondaryBtnText}>데이터 새로고침</Text>
+                    <Text style={styles.btnHint}>최신 당첨 데이터 가져오기</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
           </>
         ) : null}
 
+        {/* ─── Footer ──────────────────────── */}
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            로또는 완전한 랜덤 게임입니다. AI 분석 및 게임이론 전략은{'\n'}기대값 최적화 목적이며 당첨을 보장하지 않습니다.
+            로또는 완전한 랜덤 게임입니다.{'\n'}
+            AI 분석은 기대값 최적화 목적이며 당첨을 보장하지 않습니다.
           </Text>
         </View>
       </ScrollView>
@@ -257,32 +272,48 @@ export default function MainScreen() {
   );
 }
 
+// ─── Sub-components ─────────────────────────────────────────────
+
+function StatChip({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <View style={[styles.statChip, { borderColor: color + '18' }]}>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function InfoRow({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={[
+        styles.infoValue,
+        highlight && { color: COLORS.green, fontWeight: '700' },
+      ]} numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
 function recommendationColor(rec: string): string {
   switch (rec) {
-    case 'strong_buy': return '#4CAF50';
-    case 'buy': return '#8BC34A';
+    case 'strong_buy': return COLORS.green;
+    case 'buy': return '#86EFAC';
     case 'neutral': return COLORS.gold;
-    default: return '#FF6B6B';
+    default: return COLORS.red;
   }
 }
 
 function recommendationLabel(rec: string): string {
   switch (rec) {
-    case 'strong_buy': return 'STRONG BUY — 기대값 양수 구간';
-    case 'buy': return 'BUY — 이월로 기대값 개선';
-    case 'neutral': return 'NEUTRAL — 일반 구매 구간';
-    default: return 'SKIP — 기대값 불리';
+    case 'strong_buy': return 'STRONG BUY';
+    case 'buy': return 'BUY';
+    case 'neutral': return 'NEUTRAL';
+    default: return 'SKIP';
   }
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue} numberOfLines={1}>{value}</Text>
-    </View>
-  );
-}
+// ─── Styles ─────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   scroll: {
@@ -291,26 +322,48 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 40,
   },
+
+  // Header
   header: {
     alignItems: 'center',
     paddingHorizontal: 20,
     marginBottom: 20,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   appTitle: {
-    fontSize: Math.min(28, SCREEN_W * 0.07),
-    fontWeight: '800',
+    fontSize: Math.min(32, SCREEN_W * 0.08),
+    fontWeight: '900',
     color: COLORS.text,
-    letterSpacing: 3,
+    letterSpacing: 6,
+  },
+  versionPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(167, 139, 250, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.18)',
+  },
+  versionText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+    letterSpacing: 0.5,
   },
   appSubtitle: {
-    fontSize: 13,
-    color: COLORS.textSecondary,
-    marginTop: 6,
+    fontSize: 12,
+    color: COLORS.textTertiary,
+    marginTop: 8,
+    letterSpacing: 0.5,
   },
   badgeRow: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 10,
+    marginTop: 12,
     flexWrap: 'wrap',
     justifyContent: 'center',
   },
@@ -318,52 +371,91 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingVertical: 5,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.03)',
     borderWidth: 1,
     gap: 5,
   },
   badgeDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '600',
+  badgeLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
   },
-  badgeTextDim: {
-    fontSize: 11,
+  badgeLabelDim: {
+    fontSize: 10,
     fontWeight: '500',
     color: COLORS.textTertiary,
+    letterSpacing: 0.3,
   },
+
+  // Error
   errorText: {
-    color: '#FF6B6B',
+    color: COLORS.red,
     textAlign: 'center',
-    fontSize: 14,
-    marginBottom: 12,
+    fontSize: 13,
+    marginBottom: 14,
   },
   retryBtn: {
     alignSelf: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
     borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
   retryText: {
     color: COLORS.text,
     fontSize: 13,
     fontWeight: '600',
   },
-  expertInfo: {
-    marginTop: 12,
-    gap: 4,
+
+  // Stats grid
+  statsGrid: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  statChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+  },
+  statValue: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  statLabel: {
+    fontSize: 9,
+    color: COLORS.textTertiary,
+    fontWeight: '500',
+    marginTop: 3,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+
+  // Detail section
+  detailSection: {
+    marginTop: 10,
+    gap: 3,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    marginVertical: 5,
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 4,
+    paddingVertical: 5,
   },
   infoLabel: {
     fontSize: 12,
@@ -379,84 +471,108 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     marginLeft: 8,
   },
-  refreshBtn: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0, 180, 216, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 180, 216, 0.25)',
-    alignItems: 'center',
-  },
-  refreshText: {
-    color: COLORS.coldAccent,
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  refreshHint: {
-    color: COLORS.textTertiary,
-    fontSize: 10,
-    marginTop: 4,
-  },
-  regenerateBtn: {
-    marginHorizontal: 16,
-    marginTop: 10,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: 'rgba(212, 160, 23, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(212, 160, 23, 0.25)',
-    alignItems: 'center',
-  },
-  regenerateText: {
-    color: COLORS.gold,
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  regenerateHint: {
-    color: COLORS.textTertiary,
-    fontSize: 10,
-    marginTop: 4,
-  },
+
+  // Reasoning
   reasoningBox: {
-    marginTop: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.025)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.04)',
   },
   reasoningText: {
     fontSize: 11,
     color: COLORS.textSecondary,
-    lineHeight: 17,
+    lineHeight: 18,
   },
-  strategyBadge: {
-    marginTop: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+
+  // Recommendation badge
+  recBadge: {
+    flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'center',
+    marginTop: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.025)',
+    borderWidth: 1,
+    gap: 8,
   },
-  strategyBadgeText: {
-    fontSize: 11,
+  recDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  recText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+
+  // Generation time
+  genTime: {
+    textAlign: 'center',
+    fontSize: 10,
+    color: COLORS.textTertiary,
+    marginTop: 10,
+    letterSpacing: 0.3,
+  },
+
+  // Buttons
+  buttonGroup: {
+    paddingHorizontal: 16,
+    marginTop: 14,
+    gap: 10,
+  },
+  primaryBtn: {
+    paddingVertical: 16,
+    borderRadius: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.15)',
+    overflow: 'hidden',
+  },
+  primaryBtnText: {
+    color: COLORS.purple,
+    fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
+  secondaryBtn: {
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  secondaryBtnText: {
+    color: COLORS.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  btnHint: {
+    color: COLORS.textTertiary,
+    fontSize: 10,
+    marginTop: 4,
+    letterSpacing: 0.3,
+  },
+
+  // Footer
   footer: {
-    marginTop: 24,
-    paddingHorizontal: 32,
+    marginTop: 28,
+    paddingHorizontal: 40,
     alignItems: 'center',
   },
   footerText: {
     color: COLORS.textTertiary,
-    fontSize: 11,
+    fontSize: 10,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 17,
+    letterSpacing: 0.2,
   },
 });

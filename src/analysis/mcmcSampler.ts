@@ -1,15 +1,17 @@
 /**
- * MCMC Sampler — Metropolis-Hastings Constrained Sampler
+ * MCMC Sampler v7.0 — Simulated Annealing + Metropolis-Hastings
+ *
+ * Key improvements over v6.0:
+ *  - Simulated annealing schedule for better global exploration
+ *  - Multi-swap proposals (1 or 2 swaps per step)
+ *  - 6 chains (up from 4) for better convergence
+ *  - Longer burn-in with cooling schedule
+ *  - Multiple restarts with best-of selection
+ *  - Improved rejection sampling fallback
  *
  * Target distribution:
- *   π(combo) ∝ antiPopularity(combo) × I(structurallyValid(combo))
- *
- * Proposal: replace 1 of 6 numbers uniformly (symmetric → simple MH ratio)
- * 4 chains for Gelman-Rubin convergence diagnostic
- * Burn-in: 5000 | Thinning: 500
- * Convergence: R-hat < 1.1
- *
- * Fallback: Rejection sampling if MCMC doesn't converge
+ *   π(combo) ∝ exp(score(combo) / T)
+ *   where T decreases over iterations (annealing)
  */
 
 // ─── PRNG ───────────────────────────────────────────────────────
@@ -44,87 +46,121 @@ export interface MCMCResult {
   rHat: number;           // Gelman-Rubin diagnostic
   converged: boolean;
   method: 'mcmc' | 'rejection';
+  totalIterations: number;
+  acceptanceRate: number;
 }
 
-// ─── Metropolis-Hastings Sampler ────────────────────────────────
+// ─── Configuration ──────────────────────────────────────────────
 
-const NUM_CHAINS = 4;
-const BURN_IN = 5000;
-const THINNING = 500;
-const TOTAL_ITER = BURN_IN + THINNING;
+const NUM_CHAINS = 6;
+const BURN_IN = 8000;
+const SAMPLE_COUNT = 1000;
+const TOTAL_ITER = BURN_IN + SAMPLE_COUNT;
+
+// Simulated annealing temperature schedule
+const T_START = 2.0;    // high temperature = more exploration
+const T_END = 0.1;      // low temperature = more exploitation
+const NUM_RESTARTS = 3;  // multiple independent restarts
 
 /**
- * Run 4-chain MH sampler and return the best combination.
+ * Run multi-chain MH sampler with simulated annealing.
  */
 export function runMCMC(
   scoreFn: MCMCScoringFn,
   seed?: number,
 ): MCMCResult {
   const baseSeed = seed ?? createTimeSeed();
-  const chains: number[][][] = [];
-  const chainScores: number[][] = [];
 
-  for (let c = 0; c < NUM_CHAINS; c++) {
-    const rng = mulberry32(baseSeed + c * 7919);
-    const { samples, scores } = runSingleChain(scoreFn, rng);
-    chains.push(samples);
-    chainScores.push(scores);
-  }
+  let globalBestCombo: number[] = [];
+  let globalBestScore = -Infinity;
+  let bestChains: number[][][] = [];
+  let bestChainScores: number[][] = [];
+  let totalAccepted = 0;
+  let totalProposed = 0;
 
-  // Gelman-Rubin R-hat on the score dimension
-  const rHat = computeRHat(chainScores);
-  const converged = rHat < 1.1;
+  // Multiple restarts for robustness
+  for (let restart = 0; restart < NUM_RESTARTS; restart++) {
+    const restartSeed = baseSeed + restart * 104729;
+    const chains: number[][][] = [];
+    const chainScores: number[][] = [];
 
-  // Find best combo across all chains
-  let bestCombo = chains[0][0];
-  let bestScore = -Infinity;
+    for (let c = 0; c < NUM_CHAINS; c++) {
+      const rng = mulberry32(restartSeed + c * 7919);
+      const { samples, scores, accepted, proposed } = runSingleChain(scoreFn, rng);
+      chains.push(samples);
+      chainScores.push(scores);
+      totalAccepted += accepted;
+      totalProposed += proposed;
 
-  for (let c = 0; c < NUM_CHAINS; c++) {
-    for (let i = 0; i < chains[c].length; i++) {
-      if (chainScores[c][i] > bestScore) {
-        bestScore = chainScores[c][i];
-        bestCombo = chains[c][i];
+      // Track global best
+      for (let i = 0; i < scores.length; i++) {
+        if (scores[i] > globalBestScore) {
+          globalBestScore = scores[i];
+          globalBestCombo = samples[i];
+        }
       }
+    }
+
+    if (restart === 0) {
+      bestChains = chains;
+      bestChainScores = chainScores;
     }
   }
 
-  if (converged) {
+  // Gelman-Rubin R-hat on the score dimension (use first restart's chains)
+  const rHat = computeRHat(bestChainScores);
+  const converged = rHat < 1.1;
+  const acceptanceRate = totalProposed > 0 ? totalAccepted / totalProposed : 0;
+
+  if (converged || globalBestScore > -100) {
     return {
-      bestCombo: [...bestCombo].sort((a, b) => a - b),
-      bestScore,
+      bestCombo: [...globalBestCombo].sort((a, b) => a - b),
+      bestScore: globalBestScore,
       rHat,
-      converged: true,
+      converged,
       method: 'mcmc',
+      totalIterations: TOTAL_ITER * NUM_CHAINS * NUM_RESTARTS,
+      acceptanceRate,
     };
   }
 
-  // Fallback: rejection sampling
+  // Fallback: enhanced rejection sampling
   return rejectionSample(scoreFn, baseSeed);
 }
 
-// ─── Single Chain ───────────────────────────────────────────────
+// ─── Single Chain with Simulated Annealing ──────────────────────
 
 function runSingleChain(
   scoreFn: MCMCScoringFn,
   rng: () => number,
-): { samples: number[][]; scores: number[] } {
-  // Initialize: random valid combo
+): { samples: number[][]; scores: number[]; accepted: number; proposed: number } {
   let current = randomCombo(rng);
   let currentScore = scoreFn(current);
 
   const samples: number[][] = [];
   const scores: number[] = [];
+  let accepted = 0;
+  let proposed = 0;
 
   for (let iter = 0; iter < TOTAL_ITER; iter++) {
-    // Propose: swap one number
-    const proposed = proposeSwap(current, rng);
-    const proposedScore = scoreFn(proposed);
+    // Annealing temperature: exponential cooling
+    const progress = iter / TOTAL_ITER;
+    const temperature = T_START * Math.pow(T_END / T_START, progress);
 
-    // MH acceptance (symmetric proposal → ratio = π(proposed)/π(current))
-    const logAlpha = proposedScore - currentScore;
+    // Propose: single or double swap (adaptive)
+    const useDoubleSwap = rng() < 0.3; // 30% chance of double swap
+    const proposed_combo = useDoubleSwap
+      ? proposeDoubleSwap(current, rng)
+      : proposeSwap(current, rng);
+    const proposedScore = scoreFn(proposed_combo);
+    proposed++;
+
+    // Annealed MH acceptance
+    const logAlpha = (proposedScore - currentScore) / temperature;
     if (logAlpha >= 0 || Math.log(rng()) < logAlpha) {
-      current = proposed;
+      current = proposed_combo;
       currentScore = proposedScore;
+      accepted++;
     }
 
     // Collect after burn-in
@@ -134,17 +170,16 @@ function runSingleChain(
     }
   }
 
-  return { samples, scores };
+  return { samples, scores, accepted, proposed };
 }
 
-// ─── Proposal: Replace 1 of 6 ──────────────────────────────────
+// ─── Proposals ──────────────────────────────────────────────────
 
 function proposeSwap(combo: number[], rng: () => number): number[] {
   const result = [...combo];
   const replaceIdx = Math.floor(rng() * 6);
   const existing = new Set(combo);
 
-  // Pick a new number not in the combo
   let newNum: number;
   let attempts = 0;
   do {
@@ -153,6 +188,37 @@ function proposeSwap(combo: number[], rng: () => number): number[] {
   } while (existing.has(newNum) && attempts < 100);
 
   result[replaceIdx] = newNum;
+  return result;
+}
+
+function proposeDoubleSwap(combo: number[], rng: () => number): number[] {
+  const result = [...combo];
+  const existing = new Set(combo);
+
+  // Pick two distinct positions to swap
+  const idx1 = Math.floor(rng() * 6);
+  let idx2 = Math.floor(rng() * 5);
+  if (idx2 >= idx1) idx2++;
+
+  // Replace first
+  let newNum1: number;
+  let attempts = 0;
+  do {
+    newNum1 = Math.floor(rng() * 45) + 1;
+    attempts++;
+  } while (existing.has(newNum1) && attempts < 100);
+  result[idx1] = newNum1;
+
+  // Replace second
+  const existing2 = new Set(result);
+  let newNum2: number;
+  attempts = 0;
+  do {
+    newNum2 = Math.floor(rng() * 45) + 1;
+    attempts++;
+  } while (existing2.has(newNum2) && attempts < 100);
+  result[idx2] = newNum2;
+
   return result;
 }
 
@@ -174,39 +240,34 @@ function randomCombo(rng: () => number): number[] {
 // ─── Gelman-Rubin R-hat ────────────────────────────────────────
 
 function computeRHat(chainScores: number[][]): number {
-  const m = chainScores.length; // number of chains
-  const n = chainScores[0].length; // samples per chain
-  if (n < 2 || m < 2) return 2.0; // insufficient data
+  const m = chainScores.length;
+  const n = chainScores[0]?.length || 0;
+  if (n < 2 || m < 2) return 2.0;
 
-  // Chain means
   const chainMeans = chainScores.map(
     chain => chain.reduce((a, b) => a + b, 0) / n
   );
 
-  // Grand mean
   const grandMean = chainMeans.reduce((a, b) => a + b, 0) / m;
 
-  // Between-chain variance
   const B = (n / (m - 1)) * chainMeans.reduce(
     (sum, cm) => sum + (cm - grandMean) ** 2, 0
   );
 
-  // Within-chain variance
   const W = chainScores.reduce((sum, chain, i) => {
     const cm = chainMeans[i];
     const s2 = chain.reduce((s, x) => s + (x - cm) ** 2, 0) / (n - 1);
     return sum + s2;
   }, 0) / m;
 
-  if (W === 0) return 1.0; // all chains identical
+  if (W === 0) return 1.0;
 
-  // Pooled variance estimate
   const varHat = ((n - 1) / n) * W + (1 / n) * B;
 
   return Math.sqrt(varHat / W);
 }
 
-// ─── Fallback: Rejection Sampling ───────────────────────────────
+// ─── Fallback: Enhanced Rejection Sampling ──────────────────────
 
 function rejectionSample(
   scoreFn: MCMCScoringFn,
@@ -216,7 +277,8 @@ function rejectionSample(
   let bestCombo = randomCombo(rng);
   let bestScore = scoreFn(bestCombo);
 
-  for (let i = 0; i < 1000; i++) {
+  // More samples than v6 (3000 vs 1000)
+  for (let i = 0; i < 3000; i++) {
     const combo = randomCombo(rng);
     const score = scoreFn(combo);
     if (score > bestScore) {
@@ -231,5 +293,7 @@ function rejectionSample(
     rHat: NaN,
     converged: false,
     method: 'rejection',
+    totalIterations: 3000,
+    acceptanceRate: 0,
   };
 }

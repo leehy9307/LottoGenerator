@@ -1,37 +1,45 @@
 export const COLORS = {
-  background: '#0D0B1A',
-  surface: 'rgba(255, 255, 255, 0.06)',
-  surfaceBorder: 'rgba(255, 255, 255, 0.12)',
-  text: '#FFFFFF',
-  textSecondary: 'rgba(255, 255, 255, 0.6)',
-  textTertiary: 'rgba(255, 255, 255, 0.4)',
+  // Base
+  background: '#06080F',
+  surface: 'rgba(255, 255, 255, 0.04)',
+  surfaceElevated: 'rgba(255, 255, 255, 0.07)',
+  surfaceBorder: 'rgba(255, 255, 255, 0.08)',
 
-  // Gradient orb colors
-  purple: '#7B2FBE',
-  gold: '#D4A017',
-  blue: '#1E40AF',
-  pink: '#BE185D',
+  // Text
+  text: '#F0F0F5',
+  textSecondary: 'rgba(255, 255, 255, 0.55)',
+  textTertiary: 'rgba(255, 255, 255, 0.32)',
 
-  // Section accent colors
-  hotAccent: '#FF6B35',
-  coldAccent: '#00B4D8',
-  expertAccent: '#D4A017',
+  // Accents — vibrant & modern
+  hotAccent: '#FF5F3A',
+  hotAccentSoft: 'rgba(255, 95, 58, 0.12)',
+  coldAccent: '#00C2FF',
+  coldAccentSoft: 'rgba(0, 194, 255, 0.12)',
+  expertAccent: '#C8A2FF',
+  expertAccentSoft: 'rgba(200, 162, 255, 0.12)',
 
-  // Bar chart
-  barBackground: 'rgba(255, 255, 255, 0.08)',
+  // Feature colors
+  gold: '#FFBE2E',
+  green: '#34D399',
+  red: '#FF5F5F',
+  cyan: '#00C2FF',
+  purple: '#A78BFA',
 
   // Glass card
-  glassBg: 'rgba(255, 255, 255, 0.06)',
-  glassBorder: 'rgba(255, 255, 255, 0.12)',
-  glassHighlight: 'rgba(255, 255, 255, 0.15)',
+  glassBg: 'rgba(15, 18, 35, 0.75)',
+  glassBorder: 'rgba(255, 255, 255, 0.06)',
+  glassHighlight: 'rgba(255, 255, 255, 0.08)',
+
+  // Bar chart
+  barBackground: 'rgba(255, 255, 255, 0.05)',
 };
 
 export const GRADIENTS = {
-  background: ['#0D0B1A', '#1A0F2E', '#0D0B1A'],
-  purpleOrb: ['#7B2FBE', '#5B21B6', '#4C1D95'],
-  goldOrb: ['#D4A017', '#B8860B', '#996515'],
-  blueOrb: ['#1E40AF', '#1D4ED8', '#2563EB'],
-  hotSection: ['rgba(255, 107, 53, 0.15)', 'rgba(255, 107, 53, 0.05)'],
-  coldSection: ['rgba(0, 180, 216, 0.15)', 'rgba(0, 180, 216, 0.05)'],
-  expertSection: ['rgba(212, 160, 23, 0.15)', 'rgba(212, 160, 23, 0.05)'],
+  background: ['#06080F', '#0C1020', '#06080F'],
+  meshA: ['rgba(100, 60, 255, 0.25)', 'rgba(100, 60, 255, 0.0)'],
+  meshB: ['rgba(0, 194, 255, 0.18)', 'rgba(0, 194, 255, 0.0)'],
+  meshC: ['rgba(255, 95, 58, 0.12)', 'rgba(255, 95, 58, 0.0)'],
+  hotSection: ['rgba(255, 95, 58, 0.10)', 'rgba(255, 95, 58, 0.02)'],
+  coldSection: ['rgba(0, 194, 255, 0.10)', 'rgba(0, 194, 255, 0.02)'],
+  expertSection: ['rgba(200, 162, 255, 0.10)', 'rgba(200, 162, 255, 0.02)'],
 };

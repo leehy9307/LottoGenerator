@@ -30,6 +30,6 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#0D0B1A',
+    backgroundColor: '#06080F',
   },
 });

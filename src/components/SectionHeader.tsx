@@ -12,7 +12,9 @@ interface Props {
 export default function SectionHeader({ title, subtitle, accentColor, emoji }: Props) {
   return (
     <View style={styles.container}>
-      <Text style={styles.emoji}>{emoji}</Text>
+      <View style={[styles.iconBadge, { backgroundColor: accentColor + '14' }]}>
+        <Text style={styles.emoji}>{emoji}</Text>
+      </View>
       <View style={styles.textContainer}>
         <Text style={[styles.title, { color: accentColor }]}>{title}</Text>
         <Text style={styles.subtitle}>{subtitle}</Text>
@@ -25,23 +27,31 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
+  },
+  iconBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
   },
   emoji: {
-    fontSize: 24,
-    marginRight: 10,
+    fontSize: 20,
   },
   textContainer: {
     flex: 1,
   },
   title: {
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '700',
-    letterSpacing: 0.5,
+    letterSpacing: 1.5,
   },
   subtitle: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
+    fontSize: 11,
+    color: COLORS.textTertiary,
     marginTop: 2,
+    letterSpacing: 0.3,
   },
 });

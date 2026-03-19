@@ -22,24 +22,28 @@ function BarItem({
   item,
   maxCount,
   index,
-  accentColor,
   triggerKey,
 }: {
   item: NumberFrequency;
   maxCount: number;
   index: number;
-  accentColor: string;
   triggerKey: number;
 }) {
   const widthPercent = useSharedValue(0);
+  const opacity = useSharedValue(0);
   const barColor = getBallStyle(item.number).background;
-  const targetWidth = Math.max((item.count / maxCount) * 100, 5);
+  const targetWidth = Math.max((item.count / maxCount) * 100, 6);
 
   useEffect(() => {
     widthPercent.value = 0;
+    opacity.value = 0;
+    opacity.value = withDelay(
+      index * 60,
+      withTiming(1, { duration: 300 }),
+    );
     widthPercent.value = withDelay(
-      index * 80,
-      withTiming(targetWidth, { duration: 600, easing: Easing.out(Easing.cubic) })
+      index * 60,
+      withTiming(targetWidth, { duration: 700, easing: Easing.out(Easing.cubic) })
     );
   }, [triggerKey]);
 
@@ -47,9 +51,13 @@ function BarItem({
     width: `${widthPercent.value}%` as any,
   }));
 
+  const animatedRowStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+  }));
+
   return (
-    <View style={styles.barRow}>
-      <View style={[styles.numberBadge, { backgroundColor: barColor + '30' }]}>
+    <Animated.View style={[styles.barRow, animatedRowStyle]}>
+      <View style={[styles.numberBadge, { backgroundColor: barColor + '18' }]}>
         <Text style={[styles.numberText, { color: barColor }]}>{item.number}</Text>
       </View>
       <View style={styles.barContainer}>
@@ -59,10 +67,12 @@ function BarItem({
             { backgroundColor: barColor },
             animatedBarStyle,
           ]}
-        />
+        >
+          <View style={styles.barShine} />
+        </Animated.View>
       </View>
-      <Text style={styles.countText}>{item.count}회</Text>
-    </View>
+      <Text style={styles.countText}>{item.count}</Text>
+    </Animated.View>
   );
 }
 
@@ -75,7 +85,6 @@ export default function FrequencyBar({ data, maxCount, accentColor, triggerKey }
           item={item}
           maxCount={maxCount}
           index={idx}
-          accentColor={accentColor}
           triggerKey={triggerKey}
         />
       ))}
@@ -85,18 +94,18 @@ export default function FrequencyBar({ data, maxCount, accentColor, triggerKey }
 
 const styles = StyleSheet.create({
   container: {
-    gap: 8,
-    marginTop: 8,
+    gap: 7,
+    marginTop: 6,
   },
   barRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   numberBadge: {
-    width: 32,
-    height: 24,
-    borderRadius: 12,
+    width: 34,
+    height: 26,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -106,21 +115,32 @@ const styles = StyleSheet.create({
   },
   barContainer: {
     flex: 1,
-    height: 20,
+    height: 22,
     backgroundColor: COLORS.barBackground,
-    borderRadius: 10,
+    borderRadius: 11,
     overflow: 'hidden',
   },
   bar: {
     height: '100%',
-    borderRadius: 10,
-    opacity: 0.8,
+    borderRadius: 11,
+    opacity: 0.75,
+    overflow: 'hidden',
+  },
+  barShine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '45%',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderTopLeftRadius: 11,
+    borderTopRightRadius: 11,
   },
   countText: {
     color: COLORS.textSecondary,
     fontSize: 11,
     fontWeight: '600',
-    width: 32,
+    width: 28,
     textAlign: 'right',
   },
 });

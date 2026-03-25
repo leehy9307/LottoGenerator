@@ -23,6 +23,8 @@ import { COLORS } from '../constants/colors';
 const { width: SCREEN_W } = Dimensions.get('window');
 const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? (StatusBar.currentHeight || 40) : 44;
 
+const GAME_COLORS = ['#A78BFA', '#00C2FF', '#34D399', '#FBBF24', '#F87171'];
+
 function formatTime(ts: number): string {
   const d = new Date(ts);
   const pad = (n: number) => n.toString().padStart(2, '0');
@@ -60,7 +62,7 @@ export default function MainScreen() {
           <View style={styles.titleRow}>
             <Text style={styles.appTitle}>LOTTO</Text>
             <View style={styles.versionPill}>
-              <Text style={styles.versionText}>v7.0</Text>
+              <Text style={styles.versionText}>v10.0</Text>
             </View>
           </View>
           <Text style={styles.appSubtitle}>
@@ -96,54 +98,118 @@ export default function MainScreen() {
           </GlassCard>
         ) : analysis ? (
           <>
-            {/* ─── Expert Pick v7.0 (Main Feature) ──── */}
+            {/* ─── Expert Pick v10.0 — Dual Engine ──── */}
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
                 title="EXPERT PICK"
-                subtitle="SA-MCMC + Pattern Avoidance v7.0"
+                subtitle="Dual Engine v10.0 — 5 Games"
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
-              <NumberReveal
-                numbers={analysis.expertPick}
-                triggerKey={triggerKey}
-              />
 
-              {/* Stats Grid */}
-              <View style={styles.statsGrid}>
-                <StatChip
-                  label="비인기"
-                  value={`${(analysis.strategy.populationAvoidanceScore * 100).toFixed(0)}%`}
-                  color={COLORS.green}
-                />
-                <StatChip
-                  label="구조"
-                  value={`${(analysis.strategy.structuralFitScore * 100).toFixed(0)}%`}
-                  color={COLORS.cyan}
-                />
-                <StatChip
-                  label="MCMC"
-                  value={isNaN(analysis.strategy.mcmcConvergence) ? 'Rej.' : `${analysis.strategy.mcmcConvergence.toFixed(2)}`}
-                  color={COLORS.purple}
-                />
-                <StatChip
-                  label="합계"
-                  value={`${analysis.expertPick.reduce((a, b) => a + b, 0)}`}
-                  color={COLORS.textSecondary}
-                />
-              </View>
+              {analysis.expertPicks.map((pick, gameIdx) => {
+                const isEV = pick.strategy.engine === 'ev-optimized';
+                const engineColor = isEV ? COLORS.green : COLORS.purple;
+                const engineLabel = isEV ? 'EV' : 'PATTERN';
 
-              {/* Detail rows */}
+                return (
+                <View key={`game-${gameIdx}-${triggerKey}`}>
+                  {/* Game label */}
+                  <View style={styles.gameLabelRow}>
+                    <View style={[styles.gameBadge, { backgroundColor: GAME_COLORS[gameIdx] + '20', borderColor: GAME_COLORS[gameIdx] + '30' }]}>
+                      <Text style={[styles.gameBadgeText, { color: GAME_COLORS[gameIdx] }]}>
+                        GAME {String.fromCharCode(65 + gameIdx)}
+                      </Text>
+                    </View>
+                    <View style={[styles.engineTag, { backgroundColor: engineColor + '18', borderColor: engineColor + '30' }]}>
+                      <Text style={[styles.engineTagText, { color: engineColor }]}>{engineLabel}</Text>
+                    </View>
+                    <View style={styles.gameStatsInline}>
+                      {isEV ? (
+                        <>
+                          <Text style={styles.gameStatText}>
+                            비인기 {(pick.strategy.populationAvoidanceScore * 100).toFixed(0)}%
+                          </Text>
+                          <Text style={styles.gameStatDivider}>|</Text>
+                          <Text style={styles.gameStatText}>
+                            구조 {(pick.strategy.structuralFitScore * 100).toFixed(0)}%
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.gameStatText}>
+                            패턴 {pick.strategy.patternIntelligenceScore != null ? (pick.strategy.patternIntelligenceScore * 100).toFixed(0) : '—'}%
+                          </Text>
+                          <Text style={styles.gameStatDivider}>|</Text>
+                          <Text style={styles.gameStatText}>
+                            구조 {(pick.strategy.structuralFitScore * 100).toFixed(0)}%
+                          </Text>
+                        </>
+                      )}
+                      <Text style={styles.gameStatDivider}>|</Text>
+                      <Text style={styles.gameStatText}>
+                        합 {pick.numbers.reduce((a, b) => a + b, 0)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <NumberReveal
+                    numbers={pick.numbers}
+                    triggerKey={triggerKey}
+                  />
+
+                  {gameIdx < analysis.expertPicks.length - 1 && (
+                    <View style={styles.gameDivider} />
+                  )}
+                </View>
+                );
+              })}
+
+              {/* Shared detail: use first game's strategy for EV info */}
+              <View style={styles.divider} />
               <View style={styles.detailSection}>
-                <InfoRow label="홀:짝 비율" value={`${analysis.expertPick.filter(n => n % 2 === 1).length}:${analysis.expertPick.filter(n => n % 2 === 0).length}`} />
                 <InfoRow label="추정 공동당첨자" value={`${analysis.strategy.estimatedCoWinners.toFixed(1)}명`} />
                 <InfoRow label="추정 1등 당첨금" value={analysis.strategy.estimatedJackpot} />
                 <View style={styles.divider} />
+
+                {/* v10.0 Dual Engine Info */}
+                <View style={styles.patternHeader}>
+                  <Text style={styles.patternTitle}>DUAL ENGINE v10.0</Text>
+                </View>
+                <InfoRow label="Game A,B,C" value="EV-Optimized (비인기도 극대화)" />
+                <InfoRow label="Game D,E" value="Pattern Intelligence (패턴 분석)" />
+
+                {/* Pattern 게임(D,E)의 상세 정보 표시 */}
+                {(() => {
+                  const patternPick = analysis.expertPicks.find(p => p.strategy.engine === 'pattern');
+                  if (!patternPick?.strategy.patternDetails) return null;
+                  const pd = patternPick.strategy.patternDetails;
+                  return (
+                    <>
+                      <View style={styles.divider} />
+                      <View style={styles.patternHeader}>
+                        <Text style={styles.patternTitle}>PATTERN ENGINE (GAME D,E)</Text>
+                      </View>
+                      <InfoRow label="마르코프 전이" value={`${(pd.markov * 100).toFixed(0)}%`} />
+                      <InfoRow label="휴면 각성" value={`${(pd.dormancy * 100).toFixed(0)}%`} />
+                      <InfoRow label="모멘텀" value={`${pd.momentum > 0 ? '+' : ''}${(pd.momentum * 100).toFixed(0)}%`} />
+                      <InfoRow label="페어 친화도" value={`${(pd.pair * 100).toFixed(0)}%`} />
+                      {pd.awakeningNumbers.length > 0 && (
+                        <InfoRow label="각성 임박" value={pd.awakeningNumbers.join(', ')} highlight />
+                      )}
+                      {pd.risingNumbers.length > 0 && (
+                        <InfoRow label="상승 추세" value={pd.risingNumbers.join(', ')} />
+                      )}
+                    </>
+                  );
+                })()}
+                <View style={styles.divider} />
+
                 <InfoRow label="5등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev5.toFixed(0)}원`} />
                 <InfoRow label="4등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev4.toFixed(0)}원`} />
                 <InfoRow label="3등 EV" value={`${analysis.strategy.expectedValueBreakdown.ev3.toFixed(1)}원`} />
                 <InfoRow
-                  label="기대값 합계"
+                  label="기대값 합계 (게임당)"
                   value={`${analysis.strategy.expectedValue > 0 ? '+' : ''}${analysis.strategy.expectedValue}원`}
                   highlight={analysis.strategy.expectedValue > 0}
                 />
@@ -238,7 +304,7 @@ export default function MainScreen() {
                   style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
                 />
                 <Text style={styles.primaryBtnText}>번호 다시 생성</Text>
-                <Text style={styles.btnHint}>SA-MCMC v7.0으로 재생성</Text>
+                <Text style={styles.btnHint}>Dual Engine v10.0 — EV 3게임 + Pattern 2게임</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -442,6 +508,56 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
 
+  // Game label
+  gameLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    gap: 10,
+  },
+  gameBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  gameBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  engineTag: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  engineTagText: {
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  gameStatsInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+  },
+  gameStatText: {
+    fontSize: 10,
+    color: COLORS.textTertiary,
+    fontWeight: '500',
+  },
+  gameStatDivider: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.1)',
+  },
+  gameDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    marginTop: 4,
+  },
+
   // Detail section
   detailSection: {
     marginTop: 10,
@@ -470,6 +586,19 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     flexShrink: 1,
     marginLeft: 8,
+  },
+
+  // Pattern Intelligence section
+  patternHeader: {
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  patternTitle: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: COLORS.purple,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
   },
 
   // Reasoning

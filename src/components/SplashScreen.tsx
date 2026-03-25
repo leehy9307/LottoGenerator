@@ -141,7 +141,7 @@ export default function SplashScreen({ onFinish }: Props) {
 
         {/* Version badge */}
         <Animated.View style={[styles.versionBadge, versionStyle]}>
-          <Text style={styles.versionText}>v7.0</Text>
+          <Text style={styles.versionText}>v10.0</Text>
         </Animated.View>
       </View>
 

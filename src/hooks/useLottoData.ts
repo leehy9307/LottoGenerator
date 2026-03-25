@@ -2,21 +2,23 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchLottoData, refreshLottoData } from '../services/lottoApi';
 import { calculateFrequencies, getHotNumbers, getColdNumbers } from '../analysis/frequencyAnalysis';
 import { chiSquareTest } from '../analysis/statisticalTests';
-import { generateExpertPick } from '../analysis/numberGenerator';
+import { generateMultipleExpertPicks } from '../analysis/numberGenerator';
 import { AppState, AnalysisResult, LottoDrawResult, StrategyInfo } from '../types/lotto';
 
 function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResult {
   const frequencies = calculateFrequencies(draws);
   const hotNumbers = getHotNumbers(frequencies);
   const coldNumbers = getColdNumbers(frequencies);
-  const { numbers: expertPick, strategy } = generateExpertPick(draws, timestamp);
+  const picks = generateMultipleExpertPicks(draws, timestamp);
+  const expertPicks = picks.map(p => ({ numbers: p.numbers, strategy: p.strategy }));
   const chiResult = chiSquareTest(frequencies, draws.length);
   const latestDraw = draws[draws.length - 1].drawNo;
 
   return {
     hotNumbers,
     coldNumbers,
-    expertPick,
+    expertPick: expertPicks[0].numbers,
+    expertPicks,
     allFrequencies: frequencies,
     totalDraws: draws.length,
     drawRange: {
@@ -27,7 +29,7 @@ function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResul
     isUniform: chiResult.isUniform,
     generatedAt: timestamp,
     nextDrawNo: latestDraw + 1,
-    strategy,
+    strategy: expertPicks[0].strategy,
   };
 }
 

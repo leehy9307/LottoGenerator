@@ -52,15 +52,15 @@ export interface MCMCResult {
 
 // ─── Configuration ──────────────────────────────────────────────
 
-const NUM_CHAINS = 6;
-const BURN_IN = 8000;
-const SAMPLE_COUNT = 1000;
+const NUM_CHAINS = 8;
+const BURN_IN = 12000;
+const SAMPLE_COUNT = 2000;
 const TOTAL_ITER = BURN_IN + SAMPLE_COUNT;
 
 // Simulated annealing temperature schedule
-const T_START = 2.0;    // high temperature = more exploration
-const T_END = 0.1;      // low temperature = more exploitation
-const NUM_RESTARTS = 3;  // multiple independent restarts
+const T_START = 3.0;    // higher start = broader exploration of solution space
+const T_END = 0.05;     // lower end = sharper convergence to optimal
+const NUM_RESTARTS = 5;  // more restarts = better global optimum
 
 /**
  * Run multi-chain MH sampler with simulated annealing.
@@ -147,8 +147,8 @@ function runSingleChain(
     const progress = iter / TOTAL_ITER;
     const temperature = T_START * Math.pow(T_END / T_START, progress);
 
-    // Propose: single or double swap (adaptive)
-    const useDoubleSwap = rng() < 0.3; // 30% chance of double swap
+    // Adaptive proposal: early = bold exploration, late = fine tuning
+    const useDoubleSwap = rng() < (progress < 0.5 ? 0.4 : 0.15);
     const proposed_combo = useDoubleSwap
       ? proposeDoubleSwap(current, rng)
       : proposeSwap(current, rng);

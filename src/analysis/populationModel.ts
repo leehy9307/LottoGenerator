@@ -1,4 +1,5 @@
 import { LottoDrawResult } from '../types/lotto';
+import { WeightedDraw } from './dataWindowing';
 
 /**
  * Population Model v7.0 — Advanced Adversarial Human Bias Engine
@@ -211,43 +212,64 @@ const BIASES: BiasConfig[] = [
 // ─── Per-Number Unpopularity Score ──────────────────────────────
 
 /**
- * Compute per-number unpopularity score (0~1) using softmax normalization.
+ * v8.0 — 가중 비인기도 계산
+ *
+ * 핵심 변경:
+ *   - 단기 가중 데이터(WeightedDraw[]) 지원
+ *   - recency/hot_chasing bias가 가중치 반영하여 최근 트렌드 더 정확히 모델링
+ *   - softmax temperature를 0.02 → 0.015로 조정 (분별력 강화)
+ *
  * Higher = fewer people choose this number = better for expected value.
  */
 export function computeUnpopularityVector(
-  draws: LottoDrawResult[],
+  draws: LottoDrawResult[] | WeightedDraw[],
 ): Map<number, number> {
+  // WeightedDraw 판별 및 원본 추출
+  const isWeighted = draws.length > 0 && 'weight' in draws[0];
+  const rawDraws: LottoDrawResult[] = isWeighted
+    ? (draws as WeightedDraw[]).map(w => w.draw)
+    : (draws as LottoDrawResult[]);
+  const weights: number[] | null = isWeighted
+    ? (draws as WeightedDraw[]).map(w => w.weight)
+    : null;
+
   // Step 1: Compute raw popularity for each number
   const rawPopularity: number[] = new Array(46).fill(0);
 
   for (let n = 1; n <= 45; n++) {
     let totalPopularity = 0;
-    let totalWeight = 0;
+    let totalBiasWeight = 0;
 
     for (const bias of BIASES) {
-      const raw = bias.compute(n, draws);
+      let raw: number;
+
+      if (weights && (bias.name === 'recency' || bias.name === 'hot_chasing')) {
+        // 가중 버전: 시간 감쇠가 이미 weights에 반영됨
+        raw = computeWeightedBias(bias, n, rawDraws, weights);
+      } else {
+        raw = bias.compute(n, rawDraws);
+      }
+
       totalPopularity += raw * bias.weight;
-      totalWeight += bias.weight;
+      totalBiasWeight += bias.weight;
     }
 
-    rawPopularity[n] = totalPopularity / totalWeight;
+    rawPopularity[n] = totalPopularity / totalBiasWeight;
   }
 
-  // Step 2: Softmax normalization for better distribution
-  // Convert popularity to unpopularity using negative softmax
-  const temperature = 0.02; // controls how spread out the scores are
+  // Step 2: Softmax normalization — temperature 낮춰서 분별력 강화
+  const temperature = 0.015;
   const negScaled = [];
   for (let n = 1; n <= 45; n++) {
     negScaled.push(-rawPopularity[n] / temperature);
   }
 
-  // Numerical stability: subtract max
   const maxVal = Math.max(...negScaled);
   const exps = negScaled.map(x => Math.exp(x - maxVal));
   const sumExps = exps.reduce((a, b) => a + b, 0);
   const softmaxed = exps.map(e => e / sumExps);
 
-  // Step 3: Rescale to [0.15, 1.0] range (never let unpopularity go to 0)
+  // Step 3: Rescale to [0.15, 1.0]
   const minSoftmax = Math.min(...softmaxed);
   const maxSoftmax = Math.max(...softmaxed);
   const range = maxSoftmax - minSoftmax || 1;
@@ -255,11 +277,56 @@ export function computeUnpopularityVector(
   const scores = new Map<number, number>();
   for (let n = 1; n <= 45; n++) {
     const normalized = (softmaxed[n - 1] - minSoftmax) / range;
-    const unpopularity = 0.15 + normalized * 0.85; // [0.15, 1.0]
+    const unpopularity = 0.15 + normalized * 0.85;
     scores.set(n, unpopularity);
   }
 
   return scores;
+}
+
+/**
+ * 가중 bias 계산: recency, hot_chasing 등 draws 순서에 의존하는 bias에
+ * 시간 감쇠 가중치를 적용한다.
+ */
+function computeWeightedBias(
+  bias: BiasConfig,
+  num: number,
+  draws: LottoDrawResult[],
+  weights: number[],
+): number {
+  if (bias.name === 'recency') {
+    // 가중 recency: 각 회차의 가중치를 직접 반영
+    let score = 0;
+    const limit = Math.min(draws.length, 30); // 단기 윈도우 내에서만
+    for (let i = 0; i < limit; i++) {
+      if (draws[i].numbers.includes(num)) {
+        score += 0.012 * weights[i] * draws.length; // 정규화 보정
+      }
+      if (draws[i].bonus === num) {
+        score += 0.006 * weights[i] * draws.length;
+      }
+    }
+    return score;
+  }
+
+  if (bias.name === 'hot_chasing') {
+    if (draws.length < 50) return 0;
+    // 가중 빈도 계산
+    let weightedCount = 0;
+    let weightSum = 0;
+    for (let i = 0; i < draws.length; i++) {
+      if (draws[i].numbers.includes(num)) {
+        weightedCount += weights[i];
+      }
+      weightSum += weights[i];
+    }
+    const expected = weightSum * 6 / 45;
+    const ratio = expected > 0 ? weightedCount / expected : 1;
+    return Math.max(0, (ratio - 1) * 0.008);
+  }
+
+  // fallback
+  return bias.compute(num, draws);
 }
 
 // ─── Combination-Level Score ────────────────────────────────────

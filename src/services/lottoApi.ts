@@ -2,16 +2,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LottoDrawResult } from '../types/lotto';
 
 // ─── 데이터 소스 우선순위 ────────────────────────────────────────
-// 1순위: GitHub Raw (smok95/lotto) — CORS 무관, 안정적
-// 2순위: 동행복권 API — 차단될 수 있음
-// 3순위: AsyncStorage 캐시
-// 4순위: 번들 폴백 데이터
+// 1순위: AsyncStorage 캐시 (증분 업데이트)
+// 2순위: GitHub Raw (smok95/lotto) — 새 회차만 증분 fetch
+// 3순위: 동행복권 API — 새 회차만 증분 fetch
+// 4순위: 번들 폴백 데이터 (즉시 표시)
 
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/smok95/lotto/main/results/';
 const DH_API_BASE = 'https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=';
-const CACHE_KEY = 'lotto_draws_cache_v2';
-const CACHE_TS_KEY = 'lotto_cache_timestamp_v2';
-const CACHE_TTL = 1000 * 60 * 60; // 1시간
+const CACHE_KEY = 'lotto_draws_cache_v3';
+const CACHE_TTL = 1000 * 60 * 60 * 6; // 6시간 (v9: 1시간 → 6시간)
 
 // 1회차 기준일: 2002-12-07 (토요일)
 const EPOCH_DATE = new Date(2002, 11, 7);
@@ -28,15 +27,13 @@ export function calculateLatestDrawNo(now: Date = new Date()): number {
   return diffWeeks + 1;
 }
 
-// ─── GitHub Raw 데이터 소스 (1순위) ──────────────────────────────
+// ─── GitHub Raw 데이터 소스 ──────────────────────────────────────
 
 interface GitHubLottoResponse {
   draw_no: number;
   numbers: number[];
   bonus_no: number;
   date: string;
-  divisions?: { prize: number; winners: number }[];
-  total_sales_amount?: number;
 }
 
 function parseGitHubResponse(data: GitHubLottoResponse): LottoDrawResult | null {
@@ -52,7 +49,7 @@ function parseGitHubResponse(data: GitHubLottoResponse): LottoDrawResult | null 
 async function fetchFromGitHub(drawNo: number): Promise<LottoDrawResult | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(`${GITHUB_RAW_BASE}${drawNo}.json`, {
       signal: controller.signal,
     });
@@ -65,33 +62,14 @@ async function fetchFromGitHub(drawNo: number): Promise<LottoDrawResult | null> 
   }
 }
 
-async function batchFetchGitHub(drawNos: number[]): Promise<LottoDrawResult[]> {
-  const results: LottoDrawResult[] = [];
-  const batchSize = 15; // GitHub은 rate limit이 넉넉하므로 15개씩
-
-  for (let b = 0; b < drawNos.length; b += batchSize) {
-    const batch = drawNos.slice(b, b + batchSize);
-    const fetched = await Promise.all(batch.map(n => fetchFromGitHub(n)));
-    for (const r of fetched) {
-      if (r) results.push(r);
-    }
-  }
-
-  return results;
-}
-
-// ─── 동행복권 API (2순위) ────────────────────────────────────────
+// ─── 동행복권 API ────────────────────────────────────────────────
 
 interface DhApiResponse {
   returnValue: string;
   drwNo: number;
   drwNoDate: string;
-  drwtNo1: number;
-  drwtNo2: number;
-  drwtNo3: number;
-  drwtNo4: number;
-  drwtNo5: number;
-  drwtNo6: number;
+  drwtNo1: number; drwtNo2: number; drwtNo3: number;
+  drwtNo4: number; drwtNo5: number; drwtNo6: number;
   bnusNo: number;
 }
 
@@ -116,7 +94,7 @@ async function fetchFromDhApi(drawNo: number): Promise<LottoDrawResult | null> {
     const res = await fetch(`${DH_API_BASE}${drawNo}`, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Referer': 'https://www.dhlottery.co.kr/',
       },
@@ -132,13 +110,51 @@ async function fetchFromDhApi(drawNo: number): Promise<LottoDrawResult | null> {
   }
 }
 
-async function batchFetchDhApi(drawNos: number[]): Promise<LottoDrawResult[]> {
-  const results: LottoDrawResult[] = [];
-  const batchSize = 10;
+// ─── 캐시 (증분 업데이트 방식) ───────────────────────────────────
 
-  for (let b = 0; b < drawNos.length; b += batchSize) {
-    const batch = drawNos.slice(b, b + batchSize);
-    const fetched = await Promise.all(batch.map(n => fetchFromDhApi(n)));
+interface CacheData {
+  draws: LottoDrawResult[];
+  timestamp: number;
+}
+
+async function loadCache(): Promise<CacheData | null> {
+  try {
+    const raw = await AsyncStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CacheData;
+  } catch {
+    return null;
+  }
+}
+
+async function saveCache(draws: LottoDrawResult[]): Promise<void> {
+  try {
+    const data: CacheData = { draws, timestamp: Date.now() };
+    await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  } catch { /* ignore */ }
+}
+
+// ─── 증분 fetch: 새 회차만 가져오기 ──────────────────────────────
+
+async function fetchMissingDraws(
+  missingNos: number[],
+): Promise<LottoDrawResult[]> {
+  if (missingNos.length === 0) return [];
+
+  const results: LottoDrawResult[] = [];
+
+  // 모든 누락 회차를 동시에 fetch (최대 10개 정도이므로 빠름)
+  const batchSize = 10;
+  for (let b = 0; b < missingNos.length; b += batchSize) {
+    const batch = missingNos.slice(b, b + batchSize);
+    const fetched = await Promise.all(
+      batch.map(async (no) => {
+        // GitHub 먼저, 실패 시 동행복권 API
+        const gh = await fetchFromGitHub(no);
+        if (gh) return gh;
+        return fetchFromDhApi(no);
+      })
+    );
     for (const r of fetched) {
       if (r) results.push(r);
     }
@@ -147,142 +163,203 @@ async function batchFetchDhApi(drawNos: number[]): Promise<LottoDrawResult[]> {
   return results;
 }
 
-// ─── 캐시 (3순위) ────────────────────────────────────────────────
-
-async function loadCache(): Promise<LottoDrawResult[] | null> {
-  try {
-    const [cached, ts] = await Promise.all([
-      AsyncStorage.getItem(CACHE_KEY),
-      AsyncStorage.getItem(CACHE_TS_KEY),
-    ]);
-    if (!cached || !ts) return null;
-    const elapsed = Date.now() - parseInt(ts, 10);
-    if (elapsed > CACHE_TTL) return null;
-    return JSON.parse(cached) as LottoDrawResult[];
-  } catch {
-    return null;
-  }
-}
-
-async function loadCacheIgnoreTTL(): Promise<LottoDrawResult[] | null> {
-  try {
-    const cached = await AsyncStorage.getItem(CACHE_KEY);
-    if (!cached) return null;
-    return JSON.parse(cached) as LottoDrawResult[];
-  } catch {
-    return null;
-  }
-}
-
-async function saveCache(draws: LottoDrawResult[]): Promise<void> {
-  try {
-    await Promise.all([
-      AsyncStorage.setItem(CACHE_KEY, JSON.stringify(draws)),
-      AsyncStorage.setItem(CACHE_TS_KEY, Date.now().toString()),
-    ]);
-  } catch { /* ignore */ }
-}
-
-// ─── 통합 데이터 로더 ───────────────────────────────────────────
+// ─── 통합 데이터 로더 (최적화) ──────────────────────────────────
 
 type DataSource = 'github' | 'api' | 'cache' | 'fallback';
 
+/**
+ * v10.0 최적화 로딩 전략:
+ *
+ * 1) 캐시 있으면 즉시 반환 (TTL 6시간)
+ * 2) 캐시 만료 → 캐시 데이터 + 새 회차만 증분 fetch (1~3개)
+ * 3) 캐시 없음 → 폴백 데이터 + 새 회차 증분 fetch
+ *
+ * 최악 케이스: 폴백(64회차) 즉시 표시 → 백그라운드 증분
+ * 일반 케이스: 캐시 즉시 표시 (0ms fetch) → 0~3개 증분
+ */
 export async function fetchLottoData(): Promise<{
   draws: LottoDrawResult[];
   source: DataSource;
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
-  const startDraw = Math.max(1, latestDraw - 200);
+  const minDraw = Math.max(1, latestDraw - 200);
 
-  // 1) 캐시 체크 (TTL 내)
-  const cached = await loadCache();
-  if (cached && cached.length > 0) {
-    const cachedLatest = Math.max(...cached.map(d => d.drawNo));
-    if (cachedLatest >= latestDraw - 1) {
-      return { draws: cached, source: 'cache', latestDraw };
+  // 1) 캐시 로드
+  const cache = await loadCache();
+
+  if (cache && cache.draws.length > 0) {
+    const cachedLatest = Math.max(...cache.draws.map(d => d.drawNo));
+    const isFresh = (Date.now() - cache.timestamp) < CACHE_TTL;
+
+    if (isFresh && cachedLatest >= latestDraw - 1) {
+      // 캐시가 신선하고 최신 → 즉시 반환
+      return { draws: cache.draws, source: 'cache', latestDraw };
+    }
+
+    // 캐시 만료 또는 새 회차 있음 → 증분 fetch
+    const cachedSet = new Set(cache.draws.map(d => d.drawNo));
+    const missingNos: number[] = [];
+    for (let no = cachedLatest + 1; no <= latestDraw; no++) {
+      if (!cachedSet.has(no)) missingNos.push(no);
+    }
+
+    if (missingNos.length <= 10) {
+      // 10개 이하면 증분 fetch (보통 1~2개)
+      const newDraws = await fetchMissingDraws(missingNos);
+      const merged = [...cache.draws, ...newDraws]
+        .filter(d => d.drawNo >= minDraw)
+        .sort((a, b) => a.drawNo - b.drawNo);
+
+      // 중복 제거
+      const seen = new Set<number>();
+      const deduped = merged.filter(d => {
+        if (seen.has(d.drawNo)) return false;
+        seen.add(d.drawNo);
+        return true;
+      });
+
+      await saveCache(deduped);
+      return {
+        draws: deduped,
+        source: newDraws.length > 0 ? 'github' : 'cache',
+        latestDraw,
+      };
+    }
+
+    // 10개 초과 누락 → 캐시가 너무 오래됨, 전체 재구축
+    return await fullFetch(latestDraw, minDraw);
+  }
+
+  // 2) 캐시 없음 → 폴백 + 증분
+  const fallbackLatest = FALLBACK_DATA.length > 0
+    ? Math.max(...FALLBACK_DATA.map(d => d.drawNo))
+    : 0;
+
+  const missingNos: number[] = [];
+  const fallbackSet = new Set(FALLBACK_DATA.map(d => d.drawNo));
+  for (let no = fallbackLatest + 1; no <= latestDraw; no++) {
+    if (!fallbackSet.has(no)) missingNos.push(no);
+  }
+
+  if (missingNos.length <= 30) {
+    const newDraws = await fetchMissingDraws(missingNos);
+    const merged = [...FALLBACK_DATA, ...newDraws]
+      .filter(d => d.drawNo >= minDraw)
+      .sort((a, b) => a.drawNo - b.drawNo);
+
+    const seen = new Set<number>();
+    const deduped = merged.filter(d => {
+      if (seen.has(d.drawNo)) return false;
+      seen.add(d.drawNo);
+      return true;
+    });
+
+    await saveCache(deduped);
+    return {
+      draws: deduped,
+      source: newDraws.length > 0 ? 'github' : 'fallback',
+      latestDraw,
+    };
+  }
+
+  // 폴백에서도 30개 초과 누락 → 전체 구축
+  return await fullFetch(latestDraw, minDraw);
+}
+
+/**
+ * 전체 재구축: 캐시가 완전히 없거나 너무 오래된 경우.
+ * 200개를 한번에 병렬 fetch (최초 설치 시에만 발생).
+ */
+async function fullFetch(
+  latestDraw: number,
+  minDraw: number,
+): Promise<{ draws: LottoDrawResult[]; source: DataSource; latestDraw: number }> {
+  const allDrawNos = Array.from(
+    { length: latestDraw - minDraw + 1 },
+    (_, i) => minDraw + i
+  );
+
+  // 병렬도 높여서 빠르게 (30개씩)
+  const results: LottoDrawResult[] = [];
+  const batchSize = 30;
+
+  for (let b = 0; b < allDrawNos.length; b += batchSize) {
+    const batch = allDrawNos.slice(b, b + batchSize);
+    const fetched = await Promise.all(
+      batch.map(async (no) => {
+        const gh = await fetchFromGitHub(no);
+        if (gh) return gh;
+        return fetchFromDhApi(no);
+      })
+    );
+    for (const r of fetched) {
+      if (r) results.push(r);
     }
   }
 
-  // 2) GitHub Raw 시도 (1순위)
-  const allDrawNos = Array.from({ length: latestDraw - startDraw + 1 }, (_, i) => startDraw + i);
-  const githubTest = await fetchFromGitHub(latestDraw);
-
-  if (githubTest) {
-    const rest = allDrawNos.filter(n => n !== latestDraw);
-    const githubResults = await batchFetchGitHub(rest);
-    const draws = [githubTest, ...githubResults];
-
-    if (draws.length >= 30) {
-      draws.sort((a, b) => a.drawNo - b.drawNo);
-      await saveCache(draws);
-      return { draws, source: 'github', latestDraw };
-    }
+  if (results.length >= 30) {
+    results.sort((a, b) => a.drawNo - b.drawNo);
+    await saveCache(results);
+    return { draws: results, source: 'github', latestDraw };
   }
 
-  // 3) 동행복권 API 시도 (2순위)
-  const dhTest = await fetchFromDhApi(latestDraw);
-  if (dhTest) {
-    const rest = allDrawNos.filter(n => n !== latestDraw);
-    const dhResults = await batchFetchDhApi(rest);
-    const draws = [dhTest, ...dhResults];
-
-    if (draws.length >= 30) {
-      draws.sort((a, b) => a.drawNo - b.drawNo);
-      await saveCache(draws);
-      return { draws, source: 'api', latestDraw };
-    }
-  }
-
-  // 4) 만료된 캐시라도 사용 (3순위)
-  const staleCache = await loadCacheIgnoreTTL();
-  if (staleCache && staleCache.length > 0) {
-    return { draws: staleCache, source: 'cache', latestDraw };
-  }
-
-  // 5) 번들 폴백 (최후 수단)
+  // 전체 fetch도 실패 → 폴백
   return { draws: FALLBACK_DATA, source: 'fallback', latestDraw };
 }
 
+/**
+ * 강제 새로고침: 캐시 무시하고 증분 fetch.
+ */
 export async function refreshLottoData(): Promise<{
   draws: LottoDrawResult[];
   source: DataSource;
   latestDraw: number;
 }> {
   const latestDraw = calculateLatestDrawNo();
-  const startDraw = Math.max(1, latestDraw - 200);
-  const allDrawNos = Array.from({ length: latestDraw - startDraw + 1 }, (_, i) => startDraw + i);
+  const minDraw = Math.max(1, latestDraw - 200);
 
-  // 새로고침: GitHub → 동행복권 → 캐시 → 폴백
-  const githubTest = await fetchFromGitHub(latestDraw);
-  if (githubTest) {
-    const rest = allDrawNos.filter(n => n !== latestDraw);
-    const results = await batchFetchGitHub(rest);
-    const draws = [githubTest, ...results];
-    if (draws.length >= 30) {
-      draws.sort((a, b) => a.drawNo - b.drawNo);
-      await saveCache(draws);
-      return { draws, source: 'github', latestDraw };
-    }
+  // 기존 캐시 로드 (증분 베이스)
+  const cache = await loadCache();
+  const baseDraws = cache?.draws ?? FALLBACK_DATA;
+  const baseLatest = baseDraws.length > 0
+    ? Math.max(...baseDraws.map(d => d.drawNo))
+    : 0;
+
+  const baseSet = new Set(baseDraws.map(d => d.drawNo));
+  const missingNos: number[] = [];
+  for (let no = baseLatest + 1; no <= latestDraw; no++) {
+    if (!baseSet.has(no)) missingNos.push(no);
   }
 
-  const dhTest = await fetchFromDhApi(latestDraw);
-  if (dhTest) {
-    const rest = allDrawNos.filter(n => n !== latestDraw);
-    const results = await batchFetchDhApi(rest);
-    const draws = [dhTest, ...results];
-    if (draws.length >= 30) {
-      draws.sort((a, b) => a.drawNo - b.drawNo);
-      await saveCache(draws);
-      return { draws, source: 'api', latestDraw };
-    }
+  // 최신 회차도 강제 재fetch (데이터 갱신 보장)
+  if (!missingNos.includes(latestDraw)) {
+    missingNos.push(latestDraw);
   }
 
-  const staleCache = await loadCacheIgnoreTTL();
-  if (staleCache && staleCache.length > 0) {
-    return { draws: staleCache, source: 'cache', latestDraw };
-  }
-  return { draws: FALLBACK_DATA, source: 'fallback', latestDraw };
+  const newDraws = await fetchMissingDraws(missingNos);
+
+  // 새 데이터로 기존 데이터 덮어쓰기 (같은 회차는 새 것 우선)
+  const newMap = new Map(newDraws.map(d => [d.drawNo, d]));
+  const merged = baseDraws
+    .map(d => newMap.get(d.drawNo) ?? d)
+    .concat(newDraws.filter(d => !baseSet.has(d.drawNo)))
+    .filter(d => d.drawNo >= minDraw)
+    .sort((a, b) => a.drawNo - b.drawNo);
+
+  const seen = new Set<number>();
+  const deduped = merged.filter(d => {
+    if (seen.has(d.drawNo)) return false;
+    seen.add(d.drawNo);
+    return true;
+  });
+
+  await saveCache(deduped);
+  return {
+    draws: deduped,
+    source: newDraws.length > 0 ? 'github' : 'cache',
+    latestDraw,
+  };
 }
 
 // 1133회(2024-08-10) ~ 1196회(2025-10-25) 검증된 실제 당첨 데이터

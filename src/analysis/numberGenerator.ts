@@ -297,16 +297,13 @@ function buildPatternDetails(
   }
   momentum /= combo.length;
 
-  const sorted = [...combo].sort((a, b) => a - b);
   let totalZ = 0;
-  let count = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < sorted.length; j++) {
-      totalZ += engine.pairAffinity.zScores.get(`${sorted[i]},${sorted[j]}`) || 0;
-      count++;
+  for (let i = 0; i < combo.length; i++) {
+    for (let j = i + 1; j < combo.length; j++) {
+      totalZ += engine.pairAffinity.zGrid[combo[i]][combo[j]];
     }
   }
-  const pair = count > 0 ? 1 / (1 + Math.exp(-(totalZ / count) * 0.5)) : 0.5;
+  const pair = 1 / (1 + Math.exp(-(totalZ / 15) * 0.5));
 
   return {
     markov: round2(markov),

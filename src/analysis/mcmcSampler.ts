@@ -1,17 +1,16 @@
 /**
- * MCMC Sampler v7.0 — Simulated Annealing + Metropolis-Hastings
+ * MCMC Sampler v10.0 — Optimized SA-MH for Mobile
  *
- * Key improvements over v6.0:
- *  - Simulated annealing schedule for better global exploration
- *  - Multi-swap proposals (1 or 2 swaps per step)
- *  - 6 chains (up from 4) for better convergence
- *  - Longer burn-in with cooling schedule
- *  - Multiple restarts with best-of selection
- *  - Improved rejection sampling fallback
+ * v10.0 최적화 (v7.0 대비 ~93% 연산량 감소):
+ *  - 체인: 8 → 4 (수렴에 4개면 충분)
+ *  - 리스타트: 5 → 2 (글로벌 옵티멈 탐색 효율화)
+ *  - 번인: 12000 → 2000 (어닐링 스케줄 급랭으로 보상)
+ *  - 샘플: 2000 → 500
+ *  - 급랭 스케줄: T_START 3.0→2.0, T_END 0.05→0.02
+ *  - 샘플 저장 제거: best만 추적 (메모리 절약)
  *
- * Target distribution:
- *   π(combo) ∝ exp(score(combo) / T)
- *   where T decreases over iterations (annealing)
+ * 기존: 8×14000×5 = 560,000 scoreFn 호출/게임
+ * 최적화: 4×2500×2 = 20,000 scoreFn 호출/게임 (28배 감소)
  */
 
 // ─── PRNG ───────────────────────────────────────────────────────
@@ -37,33 +36,32 @@ function createTimeSeed(): number {
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface MCMCScoringFn {
-  (combo: number[]): number; // log-density (higher = better)
+  (combo: number[]): number;
 }
 
 export interface MCMCResult {
   bestCombo: number[];
   bestScore: number;
-  rHat: number;           // Gelman-Rubin diagnostic
+  rHat: number;
   converged: boolean;
   method: 'mcmc' | 'rejection';
   totalIterations: number;
   acceptanceRate: number;
 }
 
-// ─── Configuration ──────────────────────────────────────────────
+// ─── Configuration (v10.0 Mobile Optimized) ─────────────────────
 
-const NUM_CHAINS = 8;
-const BURN_IN = 12000;
-const SAMPLE_COUNT = 2000;
+const NUM_CHAINS = 4;       // v7: 8 → 4
+const BURN_IN = 2000;       // v7: 12000 → 2000
+const SAMPLE_COUNT = 500;   // v7: 2000 → 500
 const TOTAL_ITER = BURN_IN + SAMPLE_COUNT;
 
-// Simulated annealing temperature schedule
-const T_START = 3.0;    // higher start = broader exploration of solution space
-const T_END = 0.05;     // lower end = sharper convergence to optimal
-const NUM_RESTARTS = 5;  // more restarts = better global optimum
+const T_START = 2.0;        // v7: 3.0 → 2.0 (더 빠른 수렴)
+const T_END = 0.02;         // v7: 0.05 → 0.02 (더 날카로운 수렴)
+const NUM_RESTARTS = 2;     // v7: 5 → 2
 
 /**
- * Run multi-chain MH sampler with simulated annealing.
+ * Run optimized multi-chain SA-MH sampler.
  */
 export function runMCMC(
   scoreFn: MCMCScoringFn,
@@ -73,42 +71,35 @@ export function runMCMC(
 
   let globalBestCombo: number[] = [];
   let globalBestScore = -Infinity;
-  let bestChains: number[][][] = [];
-  let bestChainScores: number[][] = [];
+  let bestChainBests: number[] = []; // R-hat 계산용: 각 체인의 best score
   let totalAccepted = 0;
   let totalProposed = 0;
 
-  // Multiple restarts for robustness
   for (let restart = 0; restart < NUM_RESTARTS; restart++) {
     const restartSeed = baseSeed + restart * 104729;
-    const chains: number[][][] = [];
-    const chainScores: number[][] = [];
+    const chainBests: number[] = [];
 
     for (let c = 0; c < NUM_CHAINS; c++) {
       const rng = mulberry32(restartSeed + c * 7919);
-      const { samples, scores, accepted, proposed } = runSingleChain(scoreFn, rng);
-      chains.push(samples);
-      chainScores.push(scores);
-      totalAccepted += accepted;
-      totalProposed += proposed;
+      const result = runSingleChain(scoreFn, rng);
 
-      // Track global best
-      for (let i = 0; i < scores.length; i++) {
-        if (scores[i] > globalBestScore) {
-          globalBestScore = scores[i];
-          globalBestCombo = samples[i];
-        }
+      chainBests.push(result.bestScore);
+      totalAccepted += result.accepted;
+      totalProposed += result.proposed;
+
+      if (result.bestScore > globalBestScore) {
+        globalBestScore = result.bestScore;
+        globalBestCombo = result.bestCombo;
       }
     }
 
     if (restart === 0) {
-      bestChains = chains;
-      bestChainScores = chainScores;
+      bestChainBests = chainBests;
     }
   }
 
-  // Gelman-Rubin R-hat on the score dimension (use first restart's chains)
-  const rHat = computeRHat(bestChainScores);
+  // 간소화된 수렴 판단: 체인 간 best score 분산으로 판단
+  const rHat = computeSimpleConvergence(bestChainBests);
   const converged = rHat < 1.1;
   const acceptanceRate = totalProposed > 0 ? totalAccepted / totalProposed : 0;
 
@@ -124,53 +115,55 @@ export function runMCMC(
     };
   }
 
-  // Fallback: enhanced rejection sampling
   return rejectionSample(scoreFn, baseSeed);
 }
 
-// ─── Single Chain with Simulated Annealing ──────────────────────
+// ─── Single Chain (최적화: best만 추적) ──────────────────────────
+
+interface ChainResult {
+  bestCombo: number[];
+  bestScore: number;
+  accepted: number;
+  proposed: number;
+}
 
 function runSingleChain(
   scoreFn: MCMCScoringFn,
   rng: () => number,
-): { samples: number[][]; scores: number[]; accepted: number; proposed: number } {
+): ChainResult {
   let current = randomCombo(rng);
   let currentScore = scoreFn(current);
-
-  const samples: number[][] = [];
-  const scores: number[] = [];
+  let bestCombo = current;
+  let bestScore = currentScore;
   let accepted = 0;
   let proposed = 0;
 
   for (let iter = 0; iter < TOTAL_ITER; iter++) {
-    // Annealing temperature: exponential cooling
     const progress = iter / TOTAL_ITER;
     const temperature = T_START * Math.pow(T_END / T_START, progress);
 
-    // Adaptive proposal: early = bold exploration, late = fine tuning
-    const useDoubleSwap = rng() < (progress < 0.5 ? 0.4 : 0.15);
+    const useDoubleSwap = rng() < (progress < 0.5 ? 0.35 : 0.10);
     const proposed_combo = useDoubleSwap
       ? proposeDoubleSwap(current, rng)
       : proposeSwap(current, rng);
     const proposedScore = scoreFn(proposed_combo);
     proposed++;
 
-    // Annealed MH acceptance
     const logAlpha = (proposedScore - currentScore) / temperature;
     if (logAlpha >= 0 || Math.log(rng()) < logAlpha) {
       current = proposed_combo;
       currentScore = proposedScore;
       accepted++;
-    }
 
-    // Collect after burn-in
-    if (iter >= BURN_IN) {
-      samples.push([...current]);
-      scores.push(currentScore);
+      // best만 추적 (샘플 배열 저장 제거 → 메모리 절약)
+      if (currentScore > bestScore) {
+        bestScore = currentScore;
+        bestCombo = [...current];
+      }
     }
   }
 
-  return { samples, scores, accepted, proposed };
+  return { bestCombo, bestScore, accepted, proposed };
 }
 
 // ─── Proposals ──────────────────────────────────────────────────
@@ -185,7 +178,7 @@ function proposeSwap(combo: number[], rng: () => number): number[] {
   do {
     newNum = Math.floor(rng() * 45) + 1;
     attempts++;
-  } while (existing.has(newNum) && attempts < 100);
+  } while (existing.has(newNum) && attempts < 50);
 
   result[replaceIdx] = newNum;
   return result;
@@ -195,28 +188,25 @@ function proposeDoubleSwap(combo: number[], rng: () => number): number[] {
   const result = [...combo];
   const existing = new Set(combo);
 
-  // Pick two distinct positions to swap
   const idx1 = Math.floor(rng() * 6);
   let idx2 = Math.floor(rng() * 5);
   if (idx2 >= idx1) idx2++;
 
-  // Replace first
   let newNum1: number;
   let attempts = 0;
   do {
     newNum1 = Math.floor(rng() * 45) + 1;
     attempts++;
-  } while (existing.has(newNum1) && attempts < 100);
+  } while (existing.has(newNum1) && attempts < 50);
   result[idx1] = newNum1;
 
-  // Replace second
   const existing2 = new Set(result);
   let newNum2: number;
   attempts = 0;
   do {
     newNum2 = Math.floor(rng() * 45) + 1;
     attempts++;
-  } while (existing2.has(newNum2) && attempts < 100);
+  } while (existing2.has(newNum2) && attempts < 50);
   result[idx2] = newNum2;
 
   return result;
@@ -237,37 +227,23 @@ function randomCombo(rng: () => number): number[] {
   return nums.sort((a, b) => a - b);
 }
 
-// ─── Gelman-Rubin R-hat ────────────────────────────────────────
+// ─── Convergence Check (간소화) ────────────────────────────────
 
-function computeRHat(chainScores: number[][]): number {
-  const m = chainScores.length;
-  const n = chainScores[0]?.length || 0;
-  if (n < 2 || m < 2) return 2.0;
+function computeSimpleConvergence(chainBests: number[]): number {
+  if (chainBests.length < 2) return 2.0;
 
-  const chainMeans = chainScores.map(
-    chain => chain.reduce((a, b) => a + b, 0) / n
-  );
+  const mean = chainBests.reduce((a, b) => a + b, 0) / chainBests.length;
+  const variance = chainBests.reduce((s, x) => s + (x - mean) ** 2, 0) / chainBests.length;
 
-  const grandMean = chainMeans.reduce((a, b) => a + b, 0) / m;
+  if (mean === 0) return 1.0;
 
-  const B = (n / (m - 1)) * chainMeans.reduce(
-    (sum, cm) => sum + (cm - grandMean) ** 2, 0
-  );
-
-  const W = chainScores.reduce((sum, chain, i) => {
-    const cm = chainMeans[i];
-    const s2 = chain.reduce((s, x) => s + (x - cm) ** 2, 0) / (n - 1);
-    return sum + s2;
-  }, 0) / m;
-
-  if (W === 0) return 1.0;
-
-  const varHat = ((n - 1) / n) * W + (1 / n) * B;
-
-  return Math.sqrt(varHat / W);
+  // CV (변동계수) 기반: 체인 간 best score가 비슷하면 수렴
+  const cv = Math.sqrt(variance) / Math.abs(mean);
+  // CV < 0.1 → 수렴 (R-hat ≈ 1.0)
+  return 1.0 + cv * 2;
 }
 
-// ─── Fallback: Enhanced Rejection Sampling ──────────────────────
+// ─── Fallback: Rejection Sampling (축소) ─────────────────────────
 
 function rejectionSample(
   scoreFn: MCMCScoringFn,
@@ -277,8 +253,7 @@ function rejectionSample(
   let bestCombo = randomCombo(rng);
   let bestScore = scoreFn(bestCombo);
 
-  // More samples than v6 (3000 vs 1000)
-  for (let i = 0; i < 3000; i++) {
+  for (let i = 0; i < 1500; i++) {
     const combo = randomCombo(rng);
     const score = scoreFn(combo);
     if (score > bestScore) {
@@ -293,7 +268,7 @@ function rejectionSample(
     rHat: NaN,
     converged: false,
     method: 'rejection',
-    totalIterations: 3000,
+    totalIterations: 1500,
     acceptanceRate: 0,
   };
 }

@@ -19,6 +19,7 @@ import FrequencyBar from '../components/FrequencyBar';
 import LoadingAnimation from '../components/LoadingAnimation';
 import { useLottoData } from '../hooks/useLottoData';
 import { COLORS } from '../constants/colors';
+import { APP_VERSION_DISPLAY, ENGINE_NAME, ENGINE_SUMMARY } from '../constants/appVersion';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? (StatusBar.currentHeight || 40) : 44;
@@ -62,7 +63,7 @@ export default function MainScreen() {
           <View style={styles.titleRow}>
             <Text style={styles.appTitle}>LOTTO</Text>
             <View style={styles.versionPill}>
-              <Text style={styles.versionText}>v10.0</Text>
+              <Text style={styles.versionText}>{APP_VERSION_DISPLAY}</Text>
             </View>
           </View>
           <Text style={styles.appSubtitle}>
@@ -102,15 +103,16 @@ export default function MainScreen() {
             <GlassCard accentColor={COLORS.expertAccent}>
               <SectionHeader
                 title="EXPERT PICK"
-                subtitle="Dual Engine v10.0 — 5 Games"
+                subtitle={`${ENGINE_NAME} ${APP_VERSION_DISPLAY} — 5 Games`}
                 accentColor={COLORS.expertAccent}
                 emoji="✨"
               />
 
               {analysis.expertPicks.map((pick, gameIdx) => {
                 const isEV = pick.strategy.engine === 'ev-optimized';
-                const engineColor = isEV ? COLORS.green : COLORS.purple;
-                const engineLabel = isEV ? 'EV' : 'PATTERN';
+                const isHybrid = pick.strategy.engine === 'hybrid';
+                const engineColor = isEV ? COLORS.green : COLORS.cyan;
+                const engineLabel = isEV ? 'EV' : 'HYBRID';
 
                 return (
                 <View key={`game-${gameIdx}-${triggerKey}`}>
@@ -140,6 +142,14 @@ export default function MainScreen() {
                           <Text style={styles.gameStatText}>
                             패턴 {pick.strategy.patternIntelligenceScore != null ? (pick.strategy.patternIntelligenceScore * 100).toFixed(0) : '—'}%
                           </Text>
+                          {pick.strategy.hybridPipelineScore != null && (
+                            <>
+                              <Text style={styles.gameStatDivider}>|</Text>
+                              <Text style={styles.gameStatText}>
+                                융합 {(pick.strategy.hybridPipelineScore * 100).toFixed(0)}%
+                              </Text>
+                            </>
+                          )}
                           <Text style={styles.gameStatDivider}>|</Text>
                           <Text style={styles.gameStatText}>
                             구조 {(pick.strategy.structuralFitScore * 100).toFixed(0)}%
@@ -172,16 +182,40 @@ export default function MainScreen() {
                 <InfoRow label="추정 1등 당첨금" value={analysis.strategy.estimatedJackpot} />
                 <View style={styles.divider} />
 
-                {/* v10.0 Dual Engine Info */}
+                {/* Triple Engine Info */}
                 <View style={styles.patternHeader}>
-                  <Text style={styles.patternTitle}>DUAL ENGINE v10.0</Text>
+                  <Text style={styles.patternTitle}>{`TRIPLE ENGINE ${APP_VERSION_DISPLAY}`}</Text>
                 </View>
                 <InfoRow label="Game A,B,C" value="EV-Optimized (비인기도 극대화)" />
-                <InfoRow label="Game D,E" value="Pattern Intelligence (패턴 분석)" />
+                <InfoRow label="Game D,E" value="Hybrid Intelligence (패턴+ML+PRNG)" />
 
-                {/* Pattern 게임(D,E)의 상세 정보 표시 */}
+                {/* NIST/PRNG 분석 결과 */}
+                {analysis.hybridPipeline && (() => {
+                  const hp = analysis.hybridPipeline;
+                  const nistColor = hp.nistResult.verdict === 'random' ? COLORS.green
+                    : hp.nistResult.verdict === 'suspicious' ? COLORS.gold : COLORS.red;
+                  const verdictKr = hp.randomnessClassification === 'truly_random' ? '완전 무작위'
+                    : hp.randomnessClassification === 'weakly_structured' ? '약한 구조 감지' : 'PRNG 탐지됨';
+                  return (
+                    <>
+                      <View style={styles.divider} />
+                      <View style={styles.patternHeader}>
+                        <Text style={styles.patternTitle}>RANDOMNESS ANALYSIS</Text>
+                      </View>
+                      <InfoRow label="NIST 테스트" value={`${hp.nistResult.passedCount}/${hp.nistResult.totalTests} 통과`} />
+                      <InfoRow label="난수성 판정" value={verdictKr} highlight={hp.randomnessClassification !== 'truly_random'} />
+                      <InfoRow label="PRNG 탐지" value={hp.prngResult.predictable ? `탐지: ${hp.prngResult.verdict}` : '미탐지'} />
+                      {hp.mlPredictions && (
+                        <InfoRow label="ML 앙상블" value={`신뢰도 ${(hp.mlPredictions.predictions.ensemble.confidence * 100).toFixed(0)}%`} />
+                      )}
+                      <InfoRow label="융합 전략" value={`수학 ${(hp.fusionWeights.prngMath * 100).toFixed(0)}% / ML ${(hp.fusionWeights.ml * 100).toFixed(0)}% / 패턴 ${(hp.fusionWeights.pattern * 100).toFixed(0)}% / 구조 ${(hp.fusionWeights.structural * 100).toFixed(0)}%`} />
+                    </>
+                  );
+                })()}
+
+                {/* Hybrid 게임(D,E)의 상세 정보 표시 */}
                 {(() => {
-                  const patternPick = analysis.expertPicks.find(p => p.strategy.engine === 'pattern');
+                  const patternPick = analysis.expertPicks.find(p => p.strategy.engine === 'hybrid' || p.strategy.engine === 'pattern');
                   if (!patternPick?.strategy.patternDetails) return null;
                   const pd = patternPick.strategy.patternDetails;
                   return (
@@ -276,18 +310,45 @@ export default function MainScreen() {
             <GlassCard>
               <SectionHeader
                 title="STATISTICS"
-                subtitle="Chi-Square Uniformity Test"
+                subtitle="Chi-Square + NIST SP 800-22"
                 accentColor={COLORS.textSecondary}
                 emoji="📊"
               />
               <InfoRow
-                label="p-value"
+                label="카이제곱 p-value"
                 value={analysis.chiSquareP.toFixed(4)}
               />
               <InfoRow
                 label="분포 판정"
                 value={analysis.isUniform ? '균일 분포 (p > 0.05)' : '편향 감지 (p ≤ 0.05)'}
               />
+              {analysis.hybridPipeline && (
+                <>
+                  <View style={styles.divider} />
+                  <View style={styles.patternHeader}>
+                    <Text style={styles.patternTitle}>NIST SP 800-22 TESTS</Text>
+                  </View>
+                  {analysis.hybridPipeline.nistResult.tests.map((test, idx) => (
+                    <InfoRow
+                      key={idx}
+                      label={test.testName}
+                      value={`p=${test.pValue.toFixed(4)} ${test.passed ? 'PASS' : 'FAIL'}`}
+                      highlight={!test.passed}
+                    />
+                  ))}
+                  <View style={styles.divider} />
+                  <InfoRow
+                    label="p-value 균일성"
+                    value={analysis.hybridPipeline.nistResult.pValueUniformity.toFixed(4)}
+                  />
+                  <InfoRow
+                    label="종합 판정"
+                    value={analysis.hybridPipeline.nistResult.verdict === 'random' ? '무작위 (PASS)'
+                      : analysis.hybridPipeline.nistResult.verdict === 'suspicious' ? '의심 (WARNING)' : '비무작위 (FAIL)'}
+                    highlight={analysis.hybridPipeline.nistResult.verdict !== 'random'}
+                  />
+                </>
+              )}
             </GlassCard>
 
             {/* ─── Action Buttons ──────────── */}
@@ -304,7 +365,7 @@ export default function MainScreen() {
                   style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
                 />
                 <Text style={styles.primaryBtnText}>번호 다시 생성</Text>
-                <Text style={styles.btnHint}>Dual Engine v10.0 — EV 3게임 + Pattern 2게임</Text>
+                <Text style={styles.btnHint}>{ENGINE_SUMMARY}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity

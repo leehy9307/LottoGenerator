@@ -12,6 +12,7 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import { COLORS } from '../constants/colors';
+import { APP_VERSION_DISPLAY } from '../constants/appVersion';
 
 const { width, height } = Dimensions.get('window');
 
@@ -141,7 +142,7 @@ export default function SplashScreen({ onFinish }: Props) {
 
         {/* Version badge */}
         <Animated.View style={[styles.versionBadge, versionStyle]}>
-          <Text style={styles.versionText}>v10.0</Text>
+          <Text style={styles.versionText}>{APP_VERSION_DISPLAY}</Text>
         </Animated.View>
       </View>
 

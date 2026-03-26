@@ -3,13 +3,18 @@ import { fetchLottoData, refreshLottoData } from '../services/lottoApi';
 import { calculateFrequencies, getHotNumbers, getColdNumbers } from '../analysis/frequencyAnalysis';
 import { chiSquareTest } from '../analysis/statisticalTests';
 import { generateMultipleExpertPicks } from '../analysis/numberGenerator';
-import { AppState, AnalysisResult, LottoDrawResult, StrategyInfo } from '../types/lotto';
+import { runHybridPipeline } from '../analysis/hybridPipeline';
+import { AppState, AnalysisResult, LottoDrawResult, HybridPipelineResult } from '../types/lotto';
 
-function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResult {
+function runAnalysis(
+  draws: LottoDrawResult[],
+  timestamp: number,
+  hybridResult?: HybridPipelineResult
+): AnalysisResult {
   const frequencies = calculateFrequencies(draws);
   const hotNumbers = getHotNumbers(frequencies);
   const coldNumbers = getColdNumbers(frequencies);
-  const picks = generateMultipleExpertPicks(draws, timestamp);
+  const picks = generateMultipleExpertPicks(draws, timestamp, 0, hybridResult);
   const expertPicks = picks.map(p => ({ numbers: p.numbers, strategy: p.strategy }));
   const chiResult = chiSquareTest(frequencies, draws.length);
   const latestDraw = draws[draws.length - 1].drawNo;
@@ -30,6 +35,7 @@ function runAnalysis(draws: LottoDrawResult[], timestamp: number): AnalysisResul
     generatedAt: timestamp,
     nextDrawNo: latestDraw + 1,
     strategy: expertPicks[0].strategy,
+    hybridPipeline: hybridResult,
   };
 }
 
@@ -51,8 +57,9 @@ export function useLottoData() {
       const { draws, source } = await fetchLottoData();
       drawsRef.current = draws;
       const now = Date.now();
-      const analysis = runAnalysis(draws, now);
 
+      // 1단계: 즉시 동기 분석 (기존 v10 파이프라인) → 빠른 첫 렌더
+      const analysis = runAnalysis(draws, now);
       setState({
         loading: false,
         refreshing: false,
@@ -61,6 +68,20 @@ export function useLottoData() {
         dataSource: source,
       });
       setTriggerKey(prev => prev + 1);
+
+      // 2단계: 비동기 하이브리드 파이프라인 → 백그라운드 실행 후 state 업데이트
+      const latestDraw = draws[draws.length - 1].drawNo;
+      runHybridPipeline(draws, latestDraw + 1).then(hybridResult => {
+        // 하이브리드 결과로 Game D,E 재생성
+        const hybridAnalysis = runAnalysis(draws, now, hybridResult);
+        setState(prev => ({
+          ...prev,
+          analysis: hybridAnalysis,
+        }));
+        setTriggerKey(prev => prev + 1);
+      }).catch(() => {
+        // 하이브리드 실패 시 기존 결과 유지
+      });
     } catch {
       setState(prev => ({
         ...prev,
@@ -81,8 +102,9 @@ export function useLottoData() {
       const { draws, source } = await refreshLottoData();
       drawsRef.current = draws;
       const now = Date.now();
-      const analysis = runAnalysis(draws, now);
 
+      // 즉시 동기 분석
+      const analysis = runAnalysis(draws, now);
       setState({
         loading: false,
         refreshing: false,
@@ -91,6 +113,17 @@ export function useLottoData() {
         dataSource: source,
       });
       setTriggerKey(prev => prev + 1);
+
+      // 비동기 하이브리드 파이프라인
+      const latestDraw = draws[draws.length - 1].drawNo;
+      runHybridPipeline(draws, latestDraw + 1).then(hybridResult => {
+        const hybridAnalysis = runAnalysis(draws, now, hybridResult);
+        setState(prev => ({
+          ...prev,
+          analysis: hybridAnalysis,
+        }));
+        setTriggerKey(prev => prev + 1);
+      }).catch(() => {});
     } catch {
       setState(prev => ({
         ...prev,

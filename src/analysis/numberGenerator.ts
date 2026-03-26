@@ -1,4 +1,4 @@
-import { LottoDrawResult, StrategyInfo } from '../types/lotto';
+import { LottoDrawResult, StrategyInfo, HybridPipelineResult } from '../types/lotto';
 import {
   computeUnpopularityVector,
   combinationUnpopularity,
@@ -22,30 +22,30 @@ import {
   PatternEngineResult,
 } from './patternEngine';
 
-const ALGORITHM_VERSION = '10.0.0';
+import { APP_VERSION } from '../constants/appVersion';
+
+const ALGORITHM_VERSION = APP_VERSION;
 
 /**
  * ┌──────────────────────────────────────────────────────────────┐
- * │  v10.0 — Dual Engine: EV-Optimized + Pattern Intelligence   │
+ * │  v11.0 — Triple Engine: EV + Pattern + Hybrid Intelligence  │
  * ├──────────────────────────────────────────────────────────────┤
  * │                                                              │
- * │  1,216회차 통계 검증 결과:                                    │
- * │  - 번호 예측(패턴/마르코프/휴면/모멘텀) → 예측력 없음        │
- * │  - 비인기 조합 생성 → 공동당첨자 최소화 = 유일한 유효 전략  │
+ * │  v10.0 검증 + v11.0 확장:                                    │
+ * │  - 비인기 조합 생성 → 공동당첨자 최소화 = 핵심 전략 유지    │
+ * │  - NIST 난수성 검증 + PRNG 역추산 파이프라인 추가           │
+ * │  - ML(LSTM/Transformer) 앙상블 예측 통합                    │
  * │                                                              │
- * │  듀얼 엔진 병렬 생성:                                        │
+ * │  트리플 엔진 병렬 생성:                                      │
  * │  ┌─────────────────────────────────────────────┐             │
  * │  │ Game A, B, C — EV-Optimized Engine          │             │
  * │  │  구조 적합도 + AC + 비인기도 극대화          │             │
- * │  │  검증된 기대값 최적화 전략                    │             │
  * │  │  가중치: 구조 0.45 / AC 0.15 / 비인기 0.40  │             │
  * │  └─────────────────────────────────────────────┘             │
  * │  ┌─────────────────────────────────────────────┐             │
- * │  │ Game D, E — Pattern Intelligence Engine     │             │
- * │  │  마르코프 + 휴면 + 모멘텀 + 페어 친화도     │             │
- * │  │  실험적 패턴 기반 접근                       │             │
- * │  │  가중치: 구조 0.40 / AC 0.15 / 비인기 0.25  │             │
- * │  │          + 패턴 0.20                         │             │
+ * │  │ Game D, E — Hybrid Intelligence Engine      │             │
+ * │  │  패턴 + NIST/PRNG 분석 + ML 예측 융합       │             │
+ * │  │  적응적 가중치 (난수성 판정 기반)            │             │
  * │  └─────────────────────────────────────────────┘             │
  * │                                                              │
  * └──────────────────────────────────────────────────────────────┘
@@ -69,22 +69,24 @@ const EV_W_STRUCTURAL = 0.45;
 const EV_W_AC         = 0.15;
 const EV_W_ANTIPOP    = 0.40;
 
-// Pattern Intelligence Engine: 패턴 엔진 포함 (실험적)
-const PAT_W_STRUCTURAL = 0.40;
-const PAT_W_AC         = 0.15;
-const PAT_W_ANTIPOP    = 0.25;
-const PAT_W_PATTERN    = 0.20;
+// Hybrid Intelligence Engine: 패턴 + NIST/PRNG/ML 융합 (v11.0)
+const HYB_W_STRUCTURAL = 0.35;
+const HYB_W_AC         = 0.10;
+const HYB_W_ANTIPOP    = 0.20;
+const HYB_W_PATTERN    = 0.15;
+const HYB_W_HYBRID     = 0.20;  // 하이브리드 파이프라인 보너스
 
 /**
- * Generate 5 Expert Pick games — v10.0 Dual Engine
+ * Generate 5 Expert Pick games — v11.0 Triple Engine
  *
  * Game A, B, C (0-2): EV-Optimized — 비인기도 중심, 패턴 엔진 없음
- * Game D, E (3-4): Pattern Intelligence — v9 패턴 엔진 포함
+ * Game D, E (3-4): Hybrid Intelligence — 패턴 + NIST/PRNG/ML 융합
  */
 export function generateMultipleExpertPicks(
   draws: LottoDrawResult[],
   timestamp?: number,
   carryoverMisses: number = 0,
+  hybridResult?: HybridPipelineResult,
 ): ExpertPickResult[] {
   // ════════════════════════════════════════════════════════════
   // Stage 0: Smart Data Windowing — 다중 시간 척도 분리
@@ -143,14 +145,26 @@ export function generateMultipleExpertPicks(
               + acScore * EV_W_AC
               + logAntiPop * EV_W_ANTIPOP;
       } else {
-        // ── Pattern Intelligence: v9 패턴 엔진 포함 ──
+        // ── Hybrid Intelligence: 패턴 + NIST/PRNG/ML 융합 (v11.0) ──
         const patternScore = scoreCombinationPattern(combo, patternEngine);
         const logPattern = Math.log(Math.max(patternScore, 0.001));
 
-        score = logStruct * PAT_W_STRUCTURAL
-              + acScore * PAT_W_AC
-              + logAntiPop * PAT_W_ANTIPOP
-              + logPattern * PAT_W_PATTERN;
+        // 하이브리드 파이프라인 보너스
+        let hybridBonus = 0;
+        if (hybridResult) {
+          let hybridSum = 0;
+          for (const n of combo) {
+            hybridSum += hybridResult.numberScores[n] || 0;
+          }
+          hybridBonus = hybridSum / combo.length;
+        }
+        const logHybrid = Math.log(Math.max(hybridBonus, 0.001));
+
+        score = logStruct * HYB_W_STRUCTURAL
+              + acScore * HYB_W_AC
+              + logAntiPop * HYB_W_ANTIPOP
+              + logPattern * HYB_W_PATTERN
+              + (hybridResult ? logHybrid * HYB_W_HYBRID : logPattern * 0.20);
       }
 
       // ── 다양성 패널티: 이전 게임과 겹침 방지 ──
@@ -195,7 +209,7 @@ export function generateMultipleExpertPicks(
       strategy = {
         algorithmVersion: ALGORITHM_VERSION,
         engine: 'ev-optimized',
-        factorSummary: `EV-Optimized v10.0 (${mcmcResult.method}) — antipop=${round2(antiPopScore)} struct=${round2(structScore.totalScore)}`,
+        factorSummary: `EV-Optimized ${APP_VERSION} (${mcmcResult.method}) — antipop=${round2(antiPopScore)} struct=${round2(structScore.totalScore)}`,
         populationAvoidanceScore: round2(antiPopScore),
         structuralFitScore: round2(structScore.totalScore),
         mcmcConvergence: round3(mcmcResult.rHat),
@@ -213,14 +227,22 @@ export function generateMultipleExpertPicks(
         estimatedJackpot: formatKoreanWon(jackpot.estimatedJackpot),
       };
     } else {
-      // Pattern Intelligence 메타데이터
+      // Hybrid Intelligence 메타데이터 (v11.0)
       const patternScore = scoreCombinationPattern(numbers, patternEngine);
       const patternDetails = buildPatternDetails(numbers, patternEngine);
 
+      // 하이브리드 파이프라인 점수 계산
+      let hybridPipelineScore = 0;
+      if (hybridResult) {
+        let hSum = 0;
+        for (const n of numbers) hSum += hybridResult.numberScores[n] || 0;
+        hybridPipelineScore = round2(hSum / numbers.length);
+      }
+
       strategy = {
         algorithmVersion: ALGORITHM_VERSION,
-        engine: 'pattern',
-        factorSummary: `Pattern v10.0 (${mcmcResult.method}) — pattern[M${round2(patternDetails.markov)}/D${round2(patternDetails.dormancy)}/V${round2(patternDetails.momentum)}/P${round2(patternDetails.pair)}]`,
+        engine: 'hybrid',
+        factorSummary: `Hybrid ${APP_VERSION} (${mcmcResult.method}) — pattern[M${round2(patternDetails.markov)}/D${round2(patternDetails.dormancy)}/V${round2(patternDetails.momentum)}/P${round2(patternDetails.pair)}]${hybridResult ? ` hybrid=${hybridPipelineScore}` : ''}`,
         populationAvoidanceScore: round2(antiPopScore),
         structuralFitScore: round2(structScore.totalScore),
         patternIntelligenceScore: round2(patternScore),
@@ -238,6 +260,9 @@ export function generateMultipleExpertPicks(
         confidenceScore: round2(evResult.confidenceScore),
         carryoverMisses,
         estimatedJackpot: formatKoreanWon(jackpot.estimatedJackpot),
+        hybridPipelineScore: hybridResult ? hybridPipelineScore : undefined,
+        randomnessVerdict: hybridResult?.nistResult.verdict,
+        prngDetected: hybridResult?.prngResult.predictable,
       };
     }
 
